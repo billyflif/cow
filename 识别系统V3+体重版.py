@@ -1,4 +1,3 @@
-#TOTO: urL传输可能又错位
 import os
 import cv2
 import torch
@@ -398,16 +397,16 @@ class CowReIDSystem:
         self.track_last_gid = {}
         self.track_last_sim = {}
 
-        # 体尺数据管理
-        self.track_measurements = {}  # 存储每个track的体尺数据（锁定后固定）
+        # 体尺/体重数据管理
+        self.track_weight = {}  # 存储每个track的体重
         self.track_full_measurements = {}  # 存储完整的体尺数据（用于API发送）
         self.sent_measurements = set()  # 记录已发送的ID，避免重复发送
 
         # 体尺数据延迟消失管理
-        self.last_displayed_measurements = None  # 最后显示的体尺数据
+        self.last_displayed_weight = None  # 最后显示的体重数据
         self.last_displayed_cow_name = None  # 最后显示的牛名称
-        self.measurement_display_counter = 0  # 体尺数据显示计数器（ID消失后开始计数）
-        self.measurement_persist_frames = 80  # ID消失后体尺数据继续显示的帧数
+        self.measurement_display_counter = 0  # 体重数据显示计数器（ID消失后开始计数）
+        self.measurement_persist_frames = 80  # ID消失后体重数据继续显示的帧数
 
         self.transform = transforms.Compose([
             LetterBox(224),
@@ -535,19 +534,19 @@ class CowReIDSystem:
         self.track_last_box.pop(tid, None)
         self.track_last_gid.pop(tid, None)
         self.track_last_sim.pop(tid, None)
-        self.track_measurements.pop(tid, None)
+        self.track_weight.pop(tid, None)
         self.track_full_measurements.pop(tid, None)
 
-    def _get_or_generate_measurements(self, tid, real_cow_id):
+    def _get_or_generate_weight(self, tid, real_cow_id):
         """
-        获取或生成体尺数据
-        如果track已有数据则返回，否则生成新的带噪声的数据
+        获取或生成体重及完整体尺数据
+        如果track已有数据则返回，否则生成新的数据
         使用真实ID查询体尺数据
 
-        返回: (显示用的4个测量值, 完整的体尺数据字典)
+        返回: (体重, 完整的体尺数据字典)
         """
-        if tid in self.track_measurements:
-            return self.track_measurements[tid], self.track_full_measurements[tid]
+        if tid in self.track_weight:
+            return self.track_weight[tid], self.track_full_measurements[tid]
 
         # 使用真实ID查找该牛的基础体尺数据
         if real_cow_id in COW_BODY_MEASUREMENTS:
@@ -562,15 +561,6 @@ class CowReIDSystem:
             cannon_circ = noisy_body[3] if len(noisy_body) > 3 else None
             cross_height = noisy_body[4] if len(noisy_body) > 4 else None
 
-            # 显示: 体高、体斜长、胸围、十字部高
-            display_measurements = [
-                body_height,
-                body_length,
-                chest_girth,
-                cross_height,
-            ]
-
-            # 完整数据字典（用于API）
             full_data_dict = {
                 "Weight": _value_or_zero(weight_value),
                 "BodyHeight": _value_or_zero(body_height),
@@ -581,66 +571,48 @@ class CowReIDSystem:
                 "CrossHeight": _value_or_zero(cross_height),
             }
 
-            self.track_measurements[tid] = display_measurements
+            self.track_weight[tid] = weight_value
             self.track_full_measurements[tid] = full_data_dict
 
-            logger.info(f"为Track {tid} (真实ID: {real_cow_id}) 生成体尺数据")
+            logger.info(f"为Track {tid} (真实ID: {real_cow_id}) 生成体重/体尺数据")
 
-            # 将识别到的体尺数据发送到API（本地视频与相机模式均上传）
-            if real_cow_id not in self.sent_measurements:
+            # 如果使用相机且该ID未发送过数据，则发送到API
+            if USE_CAMERA and real_cow_id not in self.sent_measurements:
                 send_measurement_data(real_cow_id, full_data_dict)
                 self.sent_measurements.add(real_cow_id)
 
-            return display_measurements, full_data_dict
+            return weight_value, full_data_dict
 
         return None, None
 
-    def _draw_top_measurements(self, frame, cow_name=None, measurements=None):
+    def _draw_weight_banner(self, frame, weight=None):
         """
-        在画面顶部绘制体尺数据标签（英文），满足条件时显示数值
-        指标名称常驻，数值有条件显示
-        只显示4个参数：身高、胸围、体斜长、体直长
+        在画面顶部绘制体重展示条，仅显示体重指标
         """
-        # 绿色文字
-        text_color = (0, 255, 0)
-
-        # 体尺数据 - 居中紧凑显示
         frame_width = frame.shape[1]
-        y_offset = 35  # 起始位置
-        line_spacing = 40  # 行间距
+        banner_width = 520
+        banner_height = 70
+        x_start = max(20, (frame_width - banner_width) // 2)
+        y_start = 20
 
-        # 调整布局以避免重叠
-        column_width = 280
-        column_gap = 80
-        total_block_width = (column_width * 2) + column_gap
-        start_x = max(10, (frame_width - total_block_width) // 2)
-        x_left = start_x
-        x_right = start_x + column_width + column_gap
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x_start, y_start), (x_start + banner_width, y_start + banner_height),
+                      (0, 0, 0), -1)
+        cv2.rectangle(overlay, (x_start, y_start), (x_start + banner_width, y_start + banner_height),
+                      (0, 255, 0), 2)
+        cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, frame)
 
-        # ==================== 修改：使用英文标签以避免乱码 ====================
-
-        # 直接定义要显示的英文标签列表
-        display_labels = ["BodyHeight", "Body Length", "Chest Girth", "Cross Height"]
-
-        # =================================================================
-
-        for i, label in enumerate(display_labels):
-            # 2x2布局
-            if i < 2:  # 第一行
-                x_pos = x_left if i % 2 == 0 else x_right
-                y_pos = y_offset
-            else:  # 第二行
-                x_pos = x_left if i % 2 == 0 else x_right
-                y_pos = y_offset + line_spacing
-
-            # 根据是否有数据决定显示内容
-            if measurements and i < len(measurements) and measurements[i] is not None:
-                measurement_text = f"{label}: {measurements[i]:>6.1f}"
-            else:
-                measurement_text = f"{label}:"
-
-            cv2.putText(frame, measurement_text, (x_pos, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, MEASUREMENT_FONT_SCALE, text_color, MEASUREMENT_THICKNESS)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        if weight is not None:
+            weight_text = f"Weight: {weight:0.1f} kg"
+        else:
+            weight_text = "Weight: --"
+        weight_scale = MEASUREMENT_FONT_SCALE * 1.5
+        weight_thickness = MEASUREMENT_THICKNESS + 2
+        weight_size = cv2.getTextSize(weight_text, font, weight_scale, weight_thickness)[0]
+        weight_x = x_start + (banner_width - weight_size[0]) // 2
+        weight_y = y_start + (banner_height + weight_size[1]) // 2
+        cv2.putText(frame, weight_text, (weight_x, weight_y), font, weight_scale, (0, 255, 0), weight_thickness)
 
     def process_frame(self, frame):
         self.frame_count += 1
@@ -687,7 +659,7 @@ class CowReIDSystem:
 
         # <--- 用于存储中间区域的体尺信息（只显示一个）
         center_cow_name = None
-        center_measurements = None
+        center_weight = None
 
         # 处理当前帧的检测
         for i, (box, tid) in enumerate(zip(boxes, track_ids)):
@@ -726,7 +698,7 @@ class CowReIDSystem:
                         logger.warning(f"Track {tid} ID {self.gallery.get_name(locked_gid)} 解锁 (连续未匹配)")
                         self.track_locked_id.pop(tid, None)
                         self.track_high_conf_count[tid] = 0
-                        self.track_measurements.pop(tid, None)
+                        self.track_weight.pop(tid, None)
                         self.track_full_measurements.pop(tid, None)
                         final_gid, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
                     else:
@@ -760,13 +732,13 @@ class CowReIDSystem:
                     real_id = self.gallery.get_name(final_gid)  # 获取真实ID
                     color = LOCKED_COLOR  # 统一红色
 
-                    # 获取或生成体尺数据（使用真实ID）
-                    measurements, _ = self._get_or_generate_measurements(tid, real_id)
+                    # 获取或生成体重数据（使用真实ID）
+                    weight_value, _ = self._get_or_generate_weight(tid, real_id)
 
-                    # <--- 如果在中间区域且还没有记录体尺信息，则记录
-                    if is_center and center_cow_name is None and measurements:
+                    # <--- 如果在中间区域且还没有记录体重信息，则记录
+                    if is_center and center_cow_name is None and weight_value is not None:
                         center_cow_name = real_id
-                        center_measurements = measurements
+                        center_weight = weight_value
 
                     # 构建标签文本（显示真实ID）
                     label_text = f"ID: {real_id}"
@@ -780,27 +752,18 @@ class CowReIDSystem:
                     cv2.putText(annotated_frame, label_text, (x1, y1 - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, ID_LABEL_THICKNESS)
 
-        # <--- 体尺数据延迟消失逻辑
-        # 如果有中间区域的牛，更新显示并重置计数器
-        if center_cow_name and center_measurements:
-            self.last_displayed_measurements = center_measurements
+        # <--- 体重数据延迟消失逻辑
+        if center_cow_name is not None and center_weight is not None:
+            self.last_displayed_weight = center_weight
             self.last_displayed_cow_name = center_cow_name
             self.measurement_display_counter = 0  # 重置计数器
-            self._draw_top_measurements(annotated_frame, center_cow_name, center_measurements)
+            self._draw_weight_banner(annotated_frame, center_weight)
         else:
-            # 没有中间区域的牛，检查是否需要继续显示上次的数据
-            if self.last_displayed_measurements is not None:
-                if self.measurement_display_counter < self.measurement_persist_frames:
-                    # 继续显示上次的数据
-                    self._draw_top_measurements(annotated_frame, self.last_displayed_cow_name,
-                                                self.last_displayed_measurements)
-                    self.measurement_display_counter += 1
-                else:
-                    # 超过30帧，清除显示
-                    self._draw_top_measurements(annotated_frame)  # 只显示标签名称
+            if self.last_displayed_weight is not None and self.measurement_display_counter < self.measurement_persist_frames:
+                self._draw_weight_banner(annotated_frame, self.last_displayed_weight)
+                self.measurement_display_counter += 1
             else:
-                # 从未显示过体尺数据，只显示标签名称
-                self._draw_top_measurements(annotated_frame)
+                self._draw_weight_banner(annotated_frame)
 
         return annotated_frame
 
