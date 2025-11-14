@@ -524,9 +524,14 @@ class CowReIDSystem:
 
     def _get_or_generate_weight(self, tid, real_cow_id):
         """
-        获取或生成体重数据
-        如果track已有数据则返回，否则根据体尺数据估算体重
+        获取体重数据
+        从cow_body_measurements.py文件中读取体重数据（如果存在）
+        如果track已有数据则返回，否则从文件中读取
         使用真实ID查询体尺数据
+
+        注意：为兼容识别系统V3+版本，数据列表约定为
+        [Body Height, Body Length, Chest Girth, Cannon Circumference, Cross Height, Weight]
+        即体重放在最后一项；若尚未提供体重，则仅有前5项。
 
         返回: (体重值, 完整的体尺数据字典)
         """
@@ -537,23 +542,27 @@ class CowReIDSystem:
         if real_cow_id in COW_BODY_MEASUREMENTS:
             base_measurements = COW_BODY_MEASUREMENTS[real_cow_id]
             
-            # base_measurements格式: [Body Height, Body Length, Chest Girth, Cannon Circumference, Cross Height]
+            weight = None
+            if len(base_measurements) >= 6:
+                body_measurements = base_measurements[:5]
+                weight = base_measurements[5]
+            else:
+                body_measurements = base_measurements[:5]
+            
+            # body_measurements格式: [Body Height, Body Length, Chest Girth, Cannon Circumference, Cross Height]
             # 索引: 0=体高, 1=体斜长, 2=胸围, 3=管围, 4=十字部高
             
-            # 生成带噪声的完整数据
-            noisy_measurements = generate_measurements_with_noise(base_measurements)
+            # 生成带噪声的完整数据（只对体尺数据添加噪声，体重数据不添加噪声）
+            noisy_measurements = generate_measurements_with_noise(body_measurements)
             
-            # 提取体尺数据用于估算体重
+            # 提取体尺数据
             body_height = noisy_measurements[0] if len(noisy_measurements) > 0 else None
             body_length = noisy_measurements[1] if len(noisy_measurements) > 1 else None
             chest_girth = noisy_measurements[2] if len(noisy_measurements) > 2 else None
             
-            # 估算体重
-            estimated_weight = estimate_weight_from_measurements(body_height, chest_girth, body_length)
-            
             # 完整数据字典（用于API）
             full_data_dict = {
-                "Weight": estimated_weight if estimated_weight else 0,
+                "Weight": weight if weight is not None else 0,
                 "BodyHeight": body_height if body_height else 0,
                 "ChestAround": chest_girth if chest_girth else 0,
                 "BellyAround": 0,  # cow_body_measurements.py中没有腹围数据
@@ -562,17 +571,20 @@ class CowReIDSystem:
                 "CrossHeight": noisy_measurements[4] if len(noisy_measurements) > 4 else 0,
             }
 
-            self.track_weight[tid] = estimated_weight
+            self.track_weight[tid] = weight
             self.track_full_measurements[tid] = full_data_dict
 
-            logger.info(f"为Track {tid} (真实ID: {real_cow_id}) 生成体重数据: {estimated_weight} kg")
+            if weight is not None:
+                logger.info(f"为Track {tid} (真实ID: {real_cow_id}) 从文件读取体重数据: {weight} kg")
+            else:
+                logger.info(f"为Track {tid} (真实ID: {real_cow_id}) 未找到体重数据")
 
             # 如果使用摄像头且该ID未发送过数据，则发送到API
             if USE_CAMERA_URL and real_cow_id not in self.sent_measurements:
                 send_measurement_data(real_cow_id, full_data_dict)
                 self.sent_measurements.add(real_cow_id)
 
-            return estimated_weight, full_data_dict
+            return weight, full_data_dict
 
         return None, None
 
@@ -600,15 +612,7 @@ class CowReIDSystem:
         text_size = cv2.getTextSize(measurement_text, font, MEASUREMENT_FONT_SCALE, MEASUREMENT_THICKNESS)[0]
         x_pos = (frame_width - text_size[0]) // 2
 
-        # 绘制文本（带背景以提高可读性）
-        # 先绘制背景矩形
-        padding = 10
-        cv2.rectangle(frame, 
-                     (x_pos - padding, y_offset - text_size[1] - padding),
-                     (x_pos + text_size[0] + padding, y_offset + padding),
-                     (0, 0, 0), -1)  # 黑色背景
-        
-        # 绘制文本
+        # 绘制文本（不带背景，直接绘制文字）
         cv2.putText(frame, measurement_text, (x_pos, y_offset),
                     font, MEASUREMENT_FONT_SCALE, text_color, MEASUREMENT_THICKNESS)
 
