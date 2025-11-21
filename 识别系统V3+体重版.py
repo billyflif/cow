@@ -16,20 +16,23 @@ import json
 # 导入自定义模型
 from model import CowReIDModel
 # 导入体尺数据
-from cow_body_measurements import COW_BODY_MEASUREMENTS, MEASUREMENT_LABELS
+from cow_body_measurements_yaan import COW_BODY_MEASUREMENTS, MEASUREMENT_LABELS
 # 导入ID映射配置
 from cow_id_mapping import virtual_to_real_id
 
 # ===================== 可配置参数 =====================
 
-USE_CAMERA = False
+# ---- 调试开关 ----
+ENABLE_VOTING = True  # 跟踪投票开关：True=使用窗口投票机制，False=直接取每帧最高相似度ID并显示置信度
+
+USE_CAMERA = True
 
 VIDEO_PATH = r"E:\COW\Cow-Re-ID\0722\video1021\48.mp4"
 
-GALLERY_PATH = r"E:\COW\Obc-SDK-Test\gallery\video1022-frame-8"
+GALLERY_PATH = r"E:\COW\Obc-SDK-Test\gallery\yaan-1120"
 
 YOLO_MODEL_PATH = "E:\COW\Obc-SDK-Test\checkpoints\yolo11n.pt"
-REID_MODEL_PATH = r"E:\COW\Obc-SDK-Test\checkpoints\best_model.pth"
+REID_MODEL_PATH = r"E:\COW\Obc-SDK-Test\checkpoints\best_model_qjt.pth"
 
 SIMILARITY_THRESH = 0.60
 CONFIDENCE_THRESH = 0.03
@@ -53,11 +56,11 @@ ENABLE_LOGGING = True
 USE_CLASS_FILTER = False
 DETECT_CLASSES = [19, 20, 21, 22, 23]
 
-MAX_GALLERY_IMAGES = 15
+MAX_GALLERY_IMAGES = 20
 
 # ---- 平滑与稳定参数 ----
 SMOOTH_WINDOW = 12
-MIN_VOTE_SAMPLES = 5
+MIN_VOTE_SAMPLES = 3
 REID_BATCH_SIZE = 1
 
 # 视频保存
@@ -66,20 +69,20 @@ OUTPUT_VIDEO_DIR = "./output_videos"
 VIDEO_FPS = 10
 
 # 边缘过滤
-EDGE_FILTER_RATIO = 0.08
-MIN_BOX_WIDTH_RATIO = 0.04
+EDGE_FILTER_RATIO = 0.15
+MIN_BOX_WIDTH_RATIO = 0.15
 
 # <--- 新增：中间区域定义（用于体尺数据显示）
-CENTER_REGION_RATIO = 0.3  # 画面中间60%区域（左右各留20%）
+CENTER_REGION_RATIO = 0.15  # 画面中间60%区域（左右各留20%）
 
 # ID稳定性增强
 HIGH_CONF_THRESH = 0.75
-LOCK_FRAME_COUNT = 6
+LOCK_FRAME_COUNT = 4
 LOCKED_ID_DECAY = 60
 UNLOCK_REQUIRE_FRAMES = 20
 
 # 初始帧过滤
-INITIAL_FRAMES_SKIP = 10
+INITIAL_FRAMES_SKIP = 5
 INITIAL_HIGH_CONF_THRESH = 0.80
 
 # 跟踪丢失容忍
@@ -503,8 +506,8 @@ class CowReIDSystem:
         if frame_width is not None and frame_height is not None:
             box_width = x2 - x1
             box_height = y2 - y1
-            min_width = frame_width / 3
-            min_height = frame_height / 3
+            min_width = frame_width / 6
+            min_height = frame_height / 6
 
             if box_width < min_width or box_height < min_height:
                 return False
@@ -695,77 +698,111 @@ class CowReIDSystem:
                 continue
             else:
                 gid, sim = match_map.get(i, (-1, 0.0))
-                self.track_vote_buffer[tid].append((gid, sim))
 
-                is_initial_frame = self.frame_count <= INITIAL_FRAMES_SKIP
-                required_conf = INITIAL_HIGH_CONF_THRESH if is_initial_frame else HIGH_CONF_THRESH
+                # ========== 根据ENABLE_VOTING选择不同的识别模式 ==========
+                if not ENABLE_VOTING:
+                    # 非投票模式：直接使用当前帧的最高相似度ID
+                    final_gid = gid if gid != -1 else None
+                    final_sim = sim
 
-                # ID锁定逻辑
-                if tid in self.track_locked_id:
-                    locked_gid = self.track_locked_id[tid]
-
-                    if gid == -1:
-                        self.track_no_match_frames[tid] += 1
-                    else:
-                        self.track_no_match_frames[tid] = 0
-
-                    if self.track_no_match_frames[tid] > UNLOCK_REQUIRE_FRAMES:
-                        logger.warning(f"Track {tid} ID {self.gallery.get_name(locked_gid)} 解锁 (连续未匹配)")
-                        self.track_locked_id.pop(tid, None)
-                        self.track_high_conf_count[tid] = 0
-                        self.track_weight.pop(tid, None)
-                        self.track_full_measurements.pop(tid, None)
-                        final_gid, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
-                    else:
-                        final_gid = locked_gid
-                        _, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
-
+                    # 绘制检测框和ID（无论是否匹配）
                     if final_gid is not None:
-                        self.track_last_gid[tid] = final_gid
-                        self.track_last_sim[tid] = final_sim
+                        real_id = self.gallery.get_name(final_gid)
+                        color = LOCKED_COLOR  # 统一红色
+
+                        # 获取或生成体重数据（使用真实ID）
+                        weight_value, _ = self._get_or_generate_weight(tid, real_id)
+
+                        # 如果在中间区域且还没有记录体重信息，则记录
+                        if is_center and center_cow_name is None and weight_value is not None:
+                            center_cow_name = real_id
+                            center_weight = weight_value
+
+                        # 构建标签文本（显示真实ID + 置信度）
+                        label_text = f"ID: {real_id} ({final_sim:.2f})"
+
+                        # 绘制检测框
+                        thickness = 3
+                        x1, y1, x2, y2 = map(int, box)
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+
+                        # 绘制ID标签（增大字体和粗细）
+                        cv2.putText(annotated_frame, label_text, (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, ID_LABEL_THICKNESS)
+
                 else:
-                    final_gid, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
+                    # 投票模式：使用原有的投票和锁定逻辑
+                    self.track_vote_buffer[tid].append((gid, sim))
 
-                    if final_gid is not None and final_sim >= required_conf:
-                        self.track_high_conf_count[tid] += 1
+                    is_initial_frame = self.frame_count <= INITIAL_FRAMES_SKIP
+                    required_conf = INITIAL_HIGH_CONF_THRESH if is_initial_frame else HIGH_CONF_THRESH
+
+                    # ID锁定逻辑
+                    if tid in self.track_locked_id:
+                        locked_gid = self.track_locked_id[tid]
+
+                        if gid == -1:
+                            self.track_no_match_frames[tid] += 1
+                        else:
+                            self.track_no_match_frames[tid] = 0
+
+                        if self.track_no_match_frames[tid] > UNLOCK_REQUIRE_FRAMES:
+                            logger.warning(f"Track {tid} ID {self.gallery.get_name(locked_gid)} 解锁 (连续未匹配)")
+                            self.track_locked_id.pop(tid, None)
+                            self.track_high_conf_count[tid] = 0
+                            self.track_weight.pop(tid, None)
+                            self.track_full_measurements.pop(tid, None)
+                            final_gid, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
+                        else:
+                            final_gid = locked_gid
+                            _, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
+
+                        if final_gid is not None:
+                            self.track_last_gid[tid] = final_gid
+                            self.track_last_sim[tid] = final_sim
                     else:
-                        self.track_high_conf_count[tid] = 0
+                        final_gid, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
 
-                    if not is_initial_frame and self.track_high_conf_count[tid] >= LOCK_FRAME_COUNT:
-                        self.track_locked_id[tid] = final_gid
-                        self.track_no_match_frames[tid] = 0
-                        logger.info(
-                            f"Track {tid} ID锁定为 -> {self.gallery.get_name(final_gid)} (置信度: {final_sim:.3f})")
+                        if final_gid is not None and final_sim >= required_conf:
+                            self.track_high_conf_count[tid] += 1
+                        else:
+                            self.track_high_conf_count[tid] = 0
 
-                    if final_gid is not None:
-                        self.track_last_gid[tid] = final_gid
-                        self.track_last_sim[tid] = final_sim
+                        if not is_initial_frame and self.track_high_conf_count[tid] >= LOCK_FRAME_COUNT:
+                            self.track_locked_id[tid] = final_gid
+                            self.track_no_match_frames[tid] = 0
+                            logger.info(
+                                f"Track {tid} ID锁定为 -> {self.gallery.get_name(final_gid)} (置信度: {final_sim:.3f})")
 
-                # 只绘制锁定的ID
-                if tid in self.track_locked_id:
-                    final_gid = self.track_locked_id[tid]
-                    real_id = self.gallery.get_name(final_gid)  # 获取真实ID
-                    color = LOCKED_COLOR  # 统一红色
+                        if final_gid is not None:
+                            self.track_last_gid[tid] = final_gid
+                            self.track_last_sim[tid] = final_sim
 
-                    # 获取或生成体重数据（使用真实ID）
-                    weight_value, _ = self._get_or_generate_weight(tid, real_id)
+                    # 只绘制锁定的ID
+                    if tid in self.track_locked_id:
+                        final_gid = self.track_locked_id[tid]
+                        real_id = self.gallery.get_name(final_gid)  # 获取真实ID
+                        color = LOCKED_COLOR  # 统一红色
 
-                    # <--- 如果在中间区域且还没有记录体重信息，则记录
-                    if is_center and center_cow_name is None and weight_value is not None:
-                        center_cow_name = real_id
-                        center_weight = weight_value
+                        # 获取或生成体重数据（使用真实ID）
+                        weight_value, _ = self._get_or_generate_weight(tid, real_id)
 
-                    # 构建标签文本（显示真实ID）
-                    label_text = f"ID: {real_id}"
+                        # <--- 如果在中间区域且还没有记录体重信息，则记录
+                        if is_center and center_cow_name is None and weight_value is not None:
+                            center_cow_name = real_id
+                            center_weight = weight_value
 
-                    # 绘制检测框
-                    thickness = 3
-                    x1, y1, x2, y2 = map(int, box)
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+                        # 构建标签文本（显示真实ID）
+                        label_text = f"ID: {real_id}"
 
-                    # 绘制ID标签（增大字体和粗细）
-                    cv2.putText(annotated_frame, label_text, (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, ID_LABEL_THICKNESS)
+                        # 绘制检测框
+                        thickness = 3
+                        x1, y1, x2, y2 = map(int, box)
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+
+                        # 绘制ID标签（增大字体和粗细）
+                        cv2.putText(annotated_frame, label_text, (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, ID_LABEL_THICKNESS)
 
         # <--- 体重数据延迟消失逻辑
         if center_cow_name is not None and center_weight is not None:
