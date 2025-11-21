@@ -490,11 +490,26 @@ class CowReIDSystem:
         right_boundary = frame_width * (1 - CENTER_REGION_RATIO)
         return left_boundary <= box_center_x <= right_boundary
 
-    def _is_valid_box(self, box):
-        """检查box是否有效（面积足够大）"""
+    def _is_valid_box(self, box, frame_width=None, frame_height=None):
+        """检查box是否有效（面积足够大，且宽高满足最小比例要求）"""
         x1, y1, x2, y2 = box
         area = (x2 - x1) * (y2 - y1)
-        return area >= MIN_BOX_AREA
+
+        # 检查面积
+        if area < MIN_BOX_AREA:
+            return False
+
+        # 检查宽度和高度是否小于画面的三分之一（过滤误检测）
+        if frame_width is not None and frame_height is not None:
+            box_width = x2 - x1
+            box_height = y2 - y1
+            min_width = frame_width / 3
+            min_height = frame_height / 3
+
+            if box_width < min_width or box_height < min_height:
+                return False
+
+        return True
 
     def _get_voted_label(self, vote_deque):
         """从投票缓冲中选出最可能的ID及其平均置信度"""
@@ -639,7 +654,7 @@ class CowReIDSystem:
         # 过滤有效检测
         crops, valid_indices = [], []
         for i, box in enumerate(boxes):
-            if not self._is_valid_box(box):
+            if not self._is_valid_box(box, frame_width, frame_height):
                 continue
             x1, y1, x2, y2 = map(int, box)
             crop = frame[y1:y2, x1:x2]
@@ -663,7 +678,7 @@ class CowReIDSystem:
 
         # 处理当前帧的检测
         for i, (box, tid) in enumerate(zip(boxes, track_ids)):
-            if not self._is_valid_box(box):
+            if not self._is_valid_box(box, frame_width, frame_height):
                 continue
 
             # 重置lost计数
