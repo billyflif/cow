@@ -75,6 +75,13 @@ MIN_BOX_WIDTH_RATIO = 0.15
 # <--- 新增：中间区域定义（用于体尺数据显示）
 CENTER_REGION_RATIO = 0.15  # 画面中间60%区域（左右各留20%）
 
+# <--- 新增：中心裁剪开关
+ENABLE_CENTER_CROP = True  # 中心裁剪开关：True=启用裁剪仅保留牛肚子区域，False=不裁剪
+CROP_TOP_RATIO = 0.15      # 上部裁剪比例（裁掉上部15%）
+CROP_BOTTOM_RATIO = 0.15   # 下部裁剪比例（裁掉下部15%）
+CROP_LEFT_RATIO = 0.20     # 左侧裁剪比例（裁掉左侧20%）
+CROP_RIGHT_RATIO = 0.20    # 右侧裁剪比例（裁掉右侧20%）
+
 # ID稳定性增强
 HIGH_CONF_THRESH = 0.75
 LOCK_FRAME_COUNT = 4
@@ -296,6 +303,8 @@ class GalleryManager:
         logger.info(f"Gallery加载完成: {len(individuals)}个体, {len(self.gallery_features)}特征")
 
     def _extract_feature(self, image):
+        # 应用中心裁剪（如果启用）
+        image = center_crop_image(image)
         x = self.transform(image).unsqueeze(0).to(self.device)
         with torch.no_grad():
             f = self.reid_model(x).cpu().numpy().flatten()
@@ -325,11 +334,52 @@ class GalleryManager:
 
 
 # ===================== 辅助函数 =====================
+def center_crop_image(image):
+    """
+    对图像进行中心裁剪，保留中间的牛肚子区域
+
+    参数:
+    - image: PIL Image 或 numpy array (OpenCV格式)
+
+    返回:
+    - 裁剪后的图像（与输入格式相同）
+    """
+    if not ENABLE_CENTER_CROP:
+        return image
+
+    # 判断输入格式
+    is_pil = isinstance(image, Image.Image)
+
+    if is_pil:
+        width, height = image.size
+    else:
+        height, width = image.shape[:2]
+
+    # 计算裁剪区域
+    left = int(width * CROP_LEFT_RATIO)
+    right = int(width * (1 - CROP_RIGHT_RATIO))
+    top = int(height * CROP_TOP_RATIO)
+    bottom = int(height * (1 - CROP_BOTTOM_RATIO))
+
+    # 确保裁剪区域有效
+    if left >= right or top >= bottom:
+        return image
+
+    # 裁剪
+    if is_pil:
+        return image.crop((left, top, right, bottom))
+    else:
+        return image[top:bottom, left:right]
+
+
 def batch_extract_features(crops, model, device, transform):
     if not crops: return []
     batch_tensors = []
     for img in crops:
+        # 转换为PIL格式
         img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        # 应用中心裁剪（如果启用）
+        img = center_crop_image(img)
         t = transform(img)
         batch_tensors.append(t)
     x = torch.stack(batch_tensors).to(device)
