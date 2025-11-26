@@ -23,11 +23,11 @@ from cow_id_mapping import virtual_to_real_id
 # ===================== 可配置参数 =====================
 
 # ---- 调试开关 ----
-ENABLE_VOTING = False  # 跟踪投票开关：True=使用窗口投票机制，False=直接取每帧最高相似度ID并显示置信度
+ENABLE_VOTING = True  # 跟踪投票开关：True=使用窗口投票机制，False=直接取每帧最高相似度ID并显示置信度
 
 USE_CAMERA = False
 
-VIDEO_PATH = r"D:\FFOutput\11.25\329.mp4"
+# VIDEO_PATH = r"D:\FFOutput\11.25\329.mp4"
 VIDEO_PATH = r"D:\FFOutput\test.mp4"
 
 GALLERY_PATH = r"E:\COW\Obc-SDK-Test\gallery\yaan-1120"
@@ -72,6 +72,10 @@ VIDEO_FPS = 10
 # 边缘过滤
 EDGE_FILTER_RATIO = 0.15
 MIN_BOX_WIDTH_RATIO = 0.15
+#检测框的左边界 x1 必须大于画面宽度的 2%，才认为牛不再贴着左边缘。
+ENTRY_LEFT_MARGIN_RATIO = 0.05
+#检测框宽度 box_width 需要至少占画面宽度的 40%，才算牛的主体已经进入。
+# FULL_BOX_WIDTH_RATIO = 0.4
 
 # <--- 新增：中间区域定义（用于体尺数据显示）
 CENTER_REGION_RATIO = 0.15  # 画面中间60%区域（左右各留20%）
@@ -88,6 +92,8 @@ HIGH_CONF_THRESH = 0.75
 LOCK_FRAME_COUNT = 4
 LOCKED_ID_DECAY = 60
 UNLOCK_REQUIRE_FRAMES = 20
+MIN_TRACK_AGE_FOR_LOCK = 6
+MIN_LOCK_BOX_WIDTH_RATIO = 0.4
 
 # 初始帧过滤
 INITIAL_FRAMES_SKIP = 5
@@ -445,6 +451,8 @@ class CowReIDSystem:
         self.track_no_match_frames = defaultdict(int)
         self.track_disappeared_frames = defaultdict(int)
 
+        self.track_age = defaultdict(int)
+
         # 跟踪丢失管理
         self.track_lost_frames = defaultdict(int)
         self.track_last_box = {}
@@ -532,9 +540,16 @@ class CowReIDSystem:
         left_edge = frame_width * EDGE_FILTER_RATIO
         right_edge = frame_width * (1 - EDGE_FILTER_RATIO)
         is_at_edge = box_center_x < left_edge or box_center_x > right_edge
+
         box_width = x2 - x1
         is_too_small = box_width < frame_width * MIN_BOX_WIDTH_RATIO
-        return is_at_edge or is_too_small
+
+        # 若框左侧仍然非常靠近画面最左边，且宽度尚未达到“基本完全进入”要求，则视为边缘干扰，第二个条件暂时屏蔽
+        left_margin_threshold = frame_width * ENTRY_LEFT_MARGIN_RATIO
+        # not_fully_entered = (x1 <= left_margin_threshold) and (box_width < frame_width * FULL_BOX_WIDTH_RATIO)
+        not_fully_entered = (x1 <= left_margin_threshold)
+
+        return is_at_edge or is_too_small or not_fully_entered
 
     def _is_center_box(self, box, frame_width):
         """检查box是否在画面中间区域"""
@@ -600,6 +615,7 @@ class CowReIDSystem:
         self.track_disappeared_frames.pop(tid, None)
         self.track_history.pop(tid, None)
         self.track_lost_frames.pop(tid, None)
+        self.track_age.pop(tid, None)
         self.track_last_box.pop(tid, None)
         self.track_last_gid.pop(tid, None)
         self.track_last_sim.pop(tid, None)
@@ -705,10 +721,12 @@ class CowReIDSystem:
         self.active_track_ids = set(track_ids)
         self._update_tracker_disappearance()
 
-        # 过滤有效检测
+        # 过滤有效检测（先做框过滤，再提取特征，避免与中心裁剪逻辑冲突）
         crops, valid_indices = [], []
         for i, box in enumerate(boxes):
             if not self._is_valid_box(box, frame_width, frame_height):
+                continue
+            if self._is_edge_box(box, frame_width):
                 continue
             x1, y1, x2, y2 = map(int, box)
             crop = frame[y1:y2, x1:x2]
@@ -738,6 +756,7 @@ class CowReIDSystem:
             # 重置lost计数
             self.track_lost_frames[tid] = 0
             self.track_last_box[tid] = box
+            self.track_age[tid] += 1
 
             is_edge = self._is_edge_box(box, frame_width)
             is_center = self._is_center_box(box, frame_width)
@@ -814,12 +833,19 @@ class CowReIDSystem:
                     else:
                         final_gid, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
 
-                        if final_gid is not None and final_sim >= required_conf:
+                        box_width_ratio = float((box[2] - box[0]).item()) / frame_width
+                        can_consider_lock = (
+                            (not is_initial_frame)
+                            and (self.track_age[tid] >= MIN_TRACK_AGE_FOR_LOCK)
+                            and (box_width_ratio >= MIN_LOCK_BOX_WIDTH_RATIO)
+                        )
+
+                        if can_consider_lock and final_gid is not None and final_sim >= required_conf:
                             self.track_high_conf_count[tid] += 1
                         else:
                             self.track_high_conf_count[tid] = 0
 
-                        if not is_initial_frame and self.track_high_conf_count[tid] >= LOCK_FRAME_COUNT:
+                        if can_consider_lock and self.track_high_conf_count[tid] >= LOCK_FRAME_COUNT:
                             self.track_locked_id[tid] = final_gid
                             self.track_no_match_frames[tid] = 0
                             logger.info(
