@@ -23,16 +23,17 @@ from cow_id_mapping import virtual_to_real_id
 # ===================== 可配置参数 =====================
 
 # ---- 调试开关 ----
-ENABLE_VOTING = True  # 跟踪投票开关：True=使用窗口投票机制，False=直接取每帧最高相似度ID并显示置信度
+ENABLE_VOTING = False  # 跟踪投票开关：True=使用窗口投票机制，False=直接取每帧最高相似度ID并显示置信度
 
-USE_CAMERA = True
+USE_CAMERA = False
 
-VIDEO_PATH = r"E:\COW\Cow-Re-ID\0722\video1021\48.mp4"
+VIDEO_PATH = r"D:\FFOutput\11.25\329.mp4"
+VIDEO_PATH = r"D:\FFOutput\test.mp4"
 
 GALLERY_PATH = r"E:\COW\Obc-SDK-Test\gallery\yaan-1120"
 
 YOLO_MODEL_PATH = "E:\COW\Obc-SDK-Test\checkpoints\yolo11n.pt"
-REID_MODEL_PATH = r"E:\COW\Obc-SDK-Test\checkpoints\best_model_qjt.pth"
+REID_MODEL_PATH = r"E:\COW\Obc-SDK-Test\checkpoints\best_model_1126.pth"
 
 SIMILARITY_THRESH = 0.60
 CONFIDENCE_THRESH = 0.03
@@ -77,8 +78,8 @@ CENTER_REGION_RATIO = 0.15  # 画面中间60%区域（左右各留20%）
 
 # <--- 新增：中心裁剪开关
 ENABLE_CENTER_CROP = True  # 中心裁剪开关：True=启用裁剪仅保留牛肚子区域，False=不裁剪
-CROP_TOP_RATIO = 0.15      # 上部裁剪比例（裁掉上部15%）
-CROP_BOTTOM_RATIO = 0.15   # 下部裁剪比例（裁掉下部15%）
+CROP_TOP_RATIO = 0.1      # 上部裁剪比例（裁掉上部15%）
+CROP_BOTTOM_RATIO = 0.1   # 下部裁剪比例（裁掉下部15%）
 CROP_LEFT_RATIO = 0.20     # 左侧裁剪比例（裁掉左侧20%）
 CROP_RIGHT_RATIO = 0.20    # 右侧裁剪比例（裁掉右侧20%）
 
@@ -105,7 +106,7 @@ LOCKED_COLOR = (0, 0, 255)  # 红色 (BGR格式)
 # API配置
 API_URLS = [
     "https://lezhi.muguanjia.net/api/manage/cow_body_log/snycData",
-    "https://yz.muguanjia.net/api/manage/cow_body_log/snycData"
+    "https://cf.muguanjia.net/api/manage/cow_body_log/snycData"
 ]
 API_TIMEOUT = 5  # API请求超时时间（秒）
 
