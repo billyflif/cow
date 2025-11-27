@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 import requests
 import json
+import threading
 
 # 导入自定义模型
 from model import CowReIDModel
@@ -663,8 +664,8 @@ class CowReIDSystem:
 
             # 如果使用相机且该ID未发送过数据，则发送到API
             if USE_CAMERA and real_cow_id not in self.sent_measurements:
-                send_measurement_data(real_cow_id, full_data_dict)
                 self.sent_measurements.add(real_cow_id)
+                threading.Thread(target=send_measurement_data, args=(real_cow_id, full_data_dict), daemon=True).start()
 
             return weight_value, full_data_dict
 
