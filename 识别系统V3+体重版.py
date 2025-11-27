@@ -647,8 +647,16 @@ class CowReIDSystem:
             cannon_circ = noisy_body[3] if len(noisy_body) > 3 else None
             cross_height = noisy_body[4] if len(noisy_body) > 4 else None
 
+            # 为体重添加5kg以内的随机浮动
+            if weight_value is not None:
+                weight_fluctuation = np.random.uniform(-5, 5)
+                weight_value_with_noise = weight_value + weight_fluctuation
+                weight_value_with_noise = round(weight_value_with_noise, 1)
+            else:
+                weight_value_with_noise = None
+
             full_data_dict = {
-                "Weight": _value_or_zero(weight_value),
+                "Weight": _value_or_zero(weight_value_with_noise),
                 "BodyHeight": _value_or_zero(body_height),
                 "ChestAround": _value_or_zero(chest_girth),
                 "BellyAround": _value_or_zero(cannon_circ),
@@ -657,7 +665,7 @@ class CowReIDSystem:
                 "CrossHeight": _value_or_zero(cross_height),
             }
 
-            self.track_weight[tid] = weight_value
+            self.track_weight[tid] = weight_value_with_noise
             self.track_full_measurements[tid] = full_data_dict
 
             logger.info(f"为Track {tid} (真实ID: {real_cow_id}) 生成体重/体尺数据")
@@ -667,7 +675,7 @@ class CowReIDSystem:
                 self.sent_measurements.add(real_cow_id)
                 threading.Thread(target=send_measurement_data, args=(real_cow_id, full_data_dict), daemon=True).start()
 
-            return weight_value, full_data_dict
+            return weight_value_with_noise, full_data_dict
 
         return None, None
 
