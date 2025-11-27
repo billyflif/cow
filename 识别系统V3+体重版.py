@@ -913,8 +913,12 @@ class CowReIDSystem:
             frame = cv2.resize(frame, (self.video_width, self.video_height))
             annotated = self.process_frame(frame)
 
+            # 保存视频：摄像头模式保存原始帧，视频文件模式保存带标注的帧
             if self.video_writer is not None:
-                self.video_writer.write(annotated)
+                if USE_CAMERA:
+                    self.video_writer.write(frame)  # 摄像头：保存原始视频
+                else:
+                    self.video_writer.write(annotated)  # 视频文件：保存带检测框的视频
 
             cv2.imshow("Cow ReID System v3.3 (Enhanced)", annotated)
 
