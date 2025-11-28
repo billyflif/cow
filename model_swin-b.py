@@ -133,7 +133,7 @@ class CowReIDModel(nn.Module):
     """牛重识别主模型 - 支持本地MegaDescriptor加载"""
 
     def __init__(self, model_name='MegaDescriptor-L-384', num_classes=None,
-                 embedding_size=1024, use_lightweight=False):
+                 embedding_size=1024, use_lightweight=False, use_hf_snapshot=True):
         super().__init__()
         self.model_name = model_name
         self.embedding_size = embedding_size
@@ -148,7 +148,7 @@ class CowReIDModel(nn.Module):
 
         try:
             self.logger.info(f"模型初始化")
-            self.backbone, model_config = self.load_local_megadescriptor_model()
+            self.backbone, model_config = self.load_local_megadescriptor_model(use_hf_snapshot=use_hf_snapshot)
             self.actual_model_name = model_config['architecture']
             self.img_size = model_config.get('img_size', 384)
             self._setup_embedding_layer()
@@ -160,7 +160,7 @@ class CowReIDModel(nn.Module):
             self.logger.info("切换到轻量级模型")
             self._init_lightweight_model(num_classes, embedding_size)
 
-    def load_local_megadescriptor_model(self):
+    def load_local_megadescriptor_model(self, use_hf_snapshot=True):
         """加载MegaDescriptor-L-384模型"""
         # 根据模型名称确定对应的 HuggingFace 仓库、默认backbone和输入尺寸
         if self.model_name in ['MegaDescriptor-B-224', 'MegaDescriptor-B', 'MegaDescriptor_B_224']:
@@ -174,6 +174,18 @@ class CowReIDModel(nn.Module):
             default_arch = "swinv2_large_window12to24_192to384"
             img_size = 384
             is_b_model = False
+
+        # 如果禁用 HuggingFace snapshot，则仅使用本地构建的 backbone 结构，不做任何远程访问
+        if not use_hf_snapshot:
+            config = {'architecture': default_arch, 'img_size': img_size}
+            model = timm.create_model(
+                default_arch,
+                pretrained=False,
+                num_classes=0,
+                global_pool='avg',
+                img_size=img_size
+            )
+            return model, config
 
         # 首选使用 snapshot_download 获取精确的快照目录
         preferred_cache_root = Path("./model_cache")

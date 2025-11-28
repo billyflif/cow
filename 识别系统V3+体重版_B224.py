@@ -15,8 +15,6 @@ import json
 import threading
 import importlib.util
 
-# 导入自定义模型
-from model import CowReIDModel
 # 导入体尺数据
 from cow_body_measurements_yaan import COW_BODY_MEASUREMENTS, MEASUREMENT_LABELS
 # 导入ID映射配置
@@ -35,7 +33,7 @@ VIDEO_PATH = r"D:\FFOutput\test.mp4"
 GALLERY_PATH = r"E:\COW\Obc-SDK-Test\gallery\yaan-1120"
 
 YOLO_MODEL_PATH = "E:\COW\Obc-SDK-Test\checkpoints\yolo11n.pt"
-REID_MODEL_PATH = r"E:\COW\Obc-SDK-Test\checkpoints\best_model_1126.pth"
+REID_MODEL_PATH = r"E:\COW\Obc-SDK-Test\checkpoints\best_model_b_1128.pth"
 
 SIMILARITY_THRESH = 0.60
 CONFIDENCE_THRESH = 0.03
@@ -72,8 +70,8 @@ OUTPUT_VIDEO_DIR = "./output_videos"
 VIDEO_FPS = 10
 
 # 边缘过滤
-EDGE_FILTER_RATIO = 0.15
-MIN_BOX_WIDTH_RATIO = 0.15
+EDGE_FILTER_RATIO = 0.05
+MIN_BOX_WIDTH_RATIO = 0.05
 # 检测框的左边界 x1 必须大于画面宽度的 2%，才认为牛不再贴着左边缘。
 ENTRY_LEFT_MARGIN_RATIO = 0.05
 # 右边缘过滤比例（与左边一致，暂定为 5%）
@@ -82,10 +80,10 @@ ENTRY_RIGHT_MARGIN_RATIO = 0.05
 # FULL_BOX_WIDTH_RATIO = 0.4
 
 # <--- 新增：中间区域定义（用于体尺数据显示）
-CENTER_REGION_RATIO = 0.15  # 画面中间60%区域（左右各留20%）
+CENTER_REGION_RATIO = 0.05  # 画面中间60%区域（左右各留20%）
 
 # <--- 新增：中心裁剪开关
-ENABLE_CENTER_CROP = True  # 中心裁剪开关：True=启用裁剪仅保留牛肚子区域，False=不裁剪
+ENABLE_CENTER_CROP = False  # 中心裁剪开关：True=启用裁剪仅保留牛肚子区域，False=不裁剪
 CROP_TOP_RATIO = 0.1      # 上部裁剪比例（裁掉上部15%）
 CROP_BOTTOM_RATIO = 0.1   # 下部裁剪比例（裁掉下部15%）
 CROP_LEFT_RATIO = 0.20     # 左侧裁剪比例（裁掉左侧20%）
@@ -100,7 +98,7 @@ MIN_TRACK_AGE_FOR_LOCK = 3
 MIN_LOCK_BOX_WIDTH_RATIO = 0.4
 
 # 初始帧过滤
-INITIAL_FRAMES_SKIP = 5
+INITIAL_FRAMES_SKIP = 1
 INITIAL_HIGH_CONF_THRESH = 0.75
 
 # 跟踪丢失容忍
@@ -497,7 +495,8 @@ class CowReIDSystem:
         spec.loader.exec_module(module)
         CowReIDModel_B = module.CowReIDModel
 
-        self.reid_model = CowReIDModel_B('MegaDescriptor-B-224', use_lightweight=False)
+        self.reid_model = CowReIDModel_B('MegaDescriptor-B-224', use_lightweight=False, use_hf_snapshot=False)
+
         try:
             ckpt = torch.load(REID_MODEL_PATH, map_location='cpu', weights_only=False)
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
