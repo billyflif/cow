@@ -13,6 +13,7 @@ from datetime import datetime
 import requests
 import json
 import threading
+import importlib.util
 
 # 导入自定义模型
 from model import CowReIDModel
@@ -73,10 +74,11 @@ VIDEO_FPS = 10
 # 边缘过滤
 EDGE_FILTER_RATIO = 0.15
 MIN_BOX_WIDTH_RATIO = 0.15
-#检测框的左边界 x1 必须大于画面宽度的 2%，才认为牛不再贴着左边缘。
+# 检测框的左边界 x1 必须大于画面宽度的 2%，才认为牛不再贴着左边缘。
 ENTRY_LEFT_MARGIN_RATIO = 0.05
+# 右边缘过滤比例（与左边一致，暂定为 5%）
 ENTRY_RIGHT_MARGIN_RATIO = 0.05
-#检测框宽度 box_width 需要至少占画面宽度的 40%，才算牛的主体已经进入。
+# 检测框宽度 box_width 需要至少占画面宽度的 40%，才算牛的主体已经进入。
 # FULL_BOX_WIDTH_RATIO = 0.4
 
 # <--- 新增：中间区域定义（用于体尺数据显示）
@@ -99,7 +101,7 @@ MIN_LOCK_BOX_WIDTH_RATIO = 0.4
 
 # 初始帧过滤
 INITIAL_FRAMES_SKIP = 5
-INITIAL_HIGH_CONF_THRESH = 0.80
+INITIAL_HIGH_CONF_THRESH = 0.75
 
 # 跟踪丢失容忍
 MAX_LOST_FRAMES = 15
@@ -484,7 +486,18 @@ class CowReIDSystem:
     def _init_models(self):
         logger.info("初始化检测与识别模型")
         self.detector = YOLO(YOLO_MODEL_PATH)
-        self.reid_model = CowReIDModel('MegaDescriptor-S-224', use_lightweight=False)
+
+        model_swin_b_path = Path(__file__).with_name("model_swin-b.py")
+        if not model_swin_b_path.exists():
+            raise FileNotFoundError(f"未找到模型定义文件: {model_swin_b_path}")
+
+        spec = importlib.util.spec_from_file_location("model_swin_b", str(model_swin_b_path))
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        CowReIDModel_B = module.CowReIDModel
+
+        self.reid_model = CowReIDModel_B('MegaDescriptor-B-224', use_lightweight=False)
         try:
             ckpt = torch.load(REID_MODEL_PATH, map_location='cpu', weights_only=False)
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
