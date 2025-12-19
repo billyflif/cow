@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime
 from threading import Thread, Lock
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from pyorbbecsdk import Config, OBSensorType, Pipeline, OBFormat, Context
 
 # 尝试导入OBAlignMode
@@ -105,9 +106,18 @@ VIDEO_CONFIG = {
 
 # Flask服务配置
 FLASK_CONFIG = {
-    "host": "0.0.0.0",
-    "port": 5000,
-    "debug": False
+    "host": "0.0.0.0",  # 监听所有网络接口,允许外部访问
+    "port": 5000,  # 服务端口
+    "debug": False,  # 生产环境关闭debug
+    "threaded": True,  # 支持多线程处理请求
+}
+
+# CORS配置(跨域资源共享)
+CORS_CONFIG = {
+    "enabled": True,  # 是否启用CORS
+    "origins": "*",  # 允许的源,* 表示允许所有源,生产环境建议指定具体域名
+    "methods": ["GET", "POST", "OPTIONS"],  # 允许的HTTP方法
+    "allow_headers": ["Content-Type", "Authorization"],  # 允许的请求头
 }
 
 # ==================== 工具类 ====================
@@ -817,6 +827,16 @@ class CameraService:
 # ==================== Flask应用 ====================
 
 app = Flask(__name__)
+
+# 配置CORS支持(允许跨域请求)
+if CORS_CONFIG["enabled"]:
+    CORS(app,
+         origins=CORS_CONFIG["origins"],
+         methods=CORS_CONFIG["methods"],
+         allow_headers=CORS_CONFIG["allow_headers"],
+         supports_credentials=True)
+    print("✓ CORS已启用,允许跨域请求")
+
 camera_service = CameraService()
 
 
@@ -924,10 +944,25 @@ def health_check():
     })
 
 
+def get_local_ip():
+    """获取本机局域网IP地址"""
+    import socket
+    try:
+        # 创建一个UDP socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # 连接到一个不可达的地址(不会真正发送数据)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        return "127.0.0.1"
+
+
 def main():
     """主函数"""
     print("\n" + "=" * 70)
-    print("🚀 启动Flask相机采集服务")
+    print("🚀 启动Flask相机采集服务 (网络监听模式)")
     print("=" * 70)
 
     # 初始化相机服务
@@ -938,15 +973,35 @@ def main():
     # 启动相机采集服务
     camera_service.start_service()
 
+    # 获取本机IP
+    local_ip = get_local_ip()
+
     print("\n" + "=" * 70)
     print("📡 Flask API服务启动中...")
-    print(f"   地址: http://{FLASK_CONFIG['host']}:{FLASK_CONFIG['port']}")
-    print("\n可用接口:")
-    print("  POST /api/start_recording - 开始录制 (参数: {\"id\": \"用户ID\", \"duration\": 60})")
-    print("  POST /api/stop_recording  - 停止录制")
-    print("  GET  /api/status          - 获取状态")
-    print("  GET  /api/health          - 健康检查")
+    print(f"\n🌐 网络访问地址:")
+    print(f"   本地访问: http://127.0.0.1:{FLASK_CONFIG['port']}")
+    print(f"   局域网访问: http://{local_ip}:{FLASK_CONFIG['port']}")
+    if FLASK_CONFIG['host'] == '0.0.0.0':
+        print(f"   外网访问: http://<公网IP>:{FLASK_CONFIG['port']} (需要配置端口转发)")
+
+    print(f"\n📋 可用接口:")
+    print(f"  POST /api/start_recording - 开始录制")
+    print(f"       示例: curl -X POST http://{local_ip}:{FLASK_CONFIG['port']}/api/start_recording \\")
+    print(f"             -H 'Content-Type: application/json' \\")
+    print(f"             -d '{{\"id\": \"user001\", \"duration\": 60}}'")
+    print(f"  POST /api/stop_recording  - 停止录制")
+    print(f"  GET  /api/status          - 获取状态")
+    print(f"  GET  /api/health          - 健康检查")
+
+    if CORS_CONFIG["enabled"]:
+        print(f"\n✓ CORS已启用,允许跨域请求")
+
     print("=" * 70)
+    print("\n💡 提示:")
+    print("  - 确保防火墙允许端口 {} 的入站连接".format(FLASK_CONFIG['port']))
+    print("  - 如需外网访问,请配置路由器端口转发")
+    print("  - 使用 Ctrl+C 停止服务")
+    print("=" * 70 + "\n")
 
     try:
         # 启动Flask服务
@@ -954,10 +1009,15 @@ def main():
             host=FLASK_CONFIG['host'],
             port=FLASK_CONFIG['port'],
             debug=FLASK_CONFIG['debug'],
-            threaded=True
+            threaded=FLASK_CONFIG.get('threaded', True),
+            use_reloader=False  # 禁用自动重载,避免相机重复初始化
         )
     except KeyboardInterrupt:
         print("\n\n⏹ 收到停止信号...")
+    except Exception as e:
+        print(f"\n❌ 服务器错误: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         camera_service.shutdown()
 
