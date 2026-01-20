@@ -83,8 +83,8 @@ VIDEO_CONFIG = {
 
     # 视频分段保存配置
     "segment": {
-        "duration": 60,  # 每段视频的时长(秒)
-        "save_path": "./videos",  # 视频保存路径
+        "duration": 8,  # 每段视频的时长(秒)
+        "save_path": "F:\COW_CAMERA",  # 视频保存路径
     },
 
     # 视频编码配置
@@ -152,8 +152,8 @@ class RawDepthWriter:
         self.frame_counter = 0
 
         os.makedirs(save_path, exist_ok=True)
-        print(f"  ✓ 原始深度数据保存路径: {save_path}")
-        print(f"  ✓ 保存格式: {format_type}")
+        print(f"  原始深度数据保存路径: {save_path}")
+        print(f"  保存格式: {format_type}")
 
     def write_depth_frame(self, depth_data_uint16):
         """保存原始深度数据(uint16格式)"""
@@ -202,7 +202,7 @@ class VideoSegmentWriter:
             # 关闭当前视频文件
             if self.writer is not None:
                 self.writer.release()
-                print(f"  ✓ 完成保存: {os.path.basename(self.current_file_path)}")
+                print(f"  完成保存: {os.path.basename(self.current_file_path)}")
 
             # 创建新的视频文件
             timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
@@ -217,7 +217,7 @@ class VideoSegmentWriter:
             )
 
             self.current_segment_start = current_time
-            print(f"📹 开始新视频段: {os.path.basename(self.current_file_path)}")
+            print(f"开始新视频段: {os.path.basename(self.current_file_path)}")
 
         # 写入帧
         if self.writer is not None:
@@ -228,7 +228,7 @@ class VideoSegmentWriter:
         if self.writer is not None:
             self.writer.release()
             if self.current_file_path:
-                print(f"  ✓ 完成保存: {os.path.basename(self.current_file_path)}")
+                print(f"  完成保存: {os.path.basename(self.current_file_path)}")
             self.writer = None
             self.current_segment_start = None
 
@@ -302,20 +302,20 @@ class CameraRecorder:
     def initialize(self, context, device_list):
         """初始化相机(只初始化一次)"""
         if self.is_initialized:
-            print(f"⚠ {self.camera_name} 已经初始化")
+            print(f" {self.camera_name} 已经初始化")
             return True
 
         try:
             device_count = device_list.get_count()
             if self.device_index >= device_count:
-                print(f"❌ 错误: 设备索引 {self.device_index} 超出范围,总设备数: {device_count}")
+                print(f"错误: 设备索引 {self.device_index} 超出范围,总设备数: {device_count}")
                 return False
 
             self.device = device_list.get_device_by_index(self.device_index)
             device_info = self.device.get_device_info()
 
             print(f"\n{'=' * 60}")
-            print(f"🎥 初始化相机: {self.camera_name}")
+            print(f"初始化相机: {self.camera_name}")
             print(f"  设备名称: {device_info.get_name()}")
             print(f"  序列号: {device_info.get_serial_number()}")
             print(f"  设备索引: {self.device_index}")
@@ -327,18 +327,18 @@ class CameraRecorder:
             if self.capture_depth:
                 success = self._configure_depth_stream(config_obj)
                 if not success:
-                    print(f"  ⚠ 深度流配置失败")
+                    print(f"   深度流配置失败")
                     self.capture_depth = False
 
             # 配置RGB流
             if self.capture_rgb:
                 success = self._configure_rgb_stream(config_obj)
                 if not success:
-                    print(f"  ⚠ RGB流配置失败")
+                    print(f"   RGB流配置失败")
                     self.capture_rgb = False
 
             if not self.capture_depth and not self.capture_rgb:
-                print("  ❌ 错误: 没有可用的传感器")
+                print("   错误: 没有可用的传感器")
                 return False
 
             # 启用帧对齐
@@ -346,20 +346,20 @@ class CameraRecorder:
                 try:
                     if hasattr(config_obj, 'set_align_mode'):
                         config_obj.set_align_mode(OBAlignMode.ALIGN_D2C_HW_MODE)
-                        print("  ✓ 帧对齐: 已启用")
+                        print("   帧对齐: 已启用")
                 except Exception:
-                    print(f"  ⚠ 帧对齐: 不可用")
+                    print(f"   帧对齐: 不可用")
 
             # 启动管道
             self.pipeline.start(config_obj)
             self.is_initialized = True
 
-            print(f"\n✅ {self.camera_name} 初始化成功!")
+            print(f"\n {self.camera_name} 初始化成功!")
             print(f"{'=' * 60}")
             return True
 
         except Exception as e:
-            print(f"❌ 初始化失败: {e}")
+            print(f" 初始化失败: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -367,18 +367,18 @@ class CameraRecorder:
     def _configure_depth_stream(self, config_obj):
         """配置深度流"""
         depth_config = self.config["depth"]
-        print(f"\n  📊 深度流配置:")
+        print(f"\n   深度流配置:")
         print(f"    请求: {depth_config['width']}x{depth_config['height']} @ {depth_config['fps']}fps ({depth_config['format']})")
 
         try:
             profile_list = self.pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
             if profile_list is None:
-                print(f"    ❌ 无深度传感器")
+                print(f"     无深度传感器")
                 return False
 
             format_enum = format_str_to_enum(depth_config['format'])
             if format_enum is None:
-                print(f"    ⚠ 格式 '{depth_config['format']}' 无效,使用默认格式")
+                print(f"     格式 '{depth_config['format']}' 无效,使用默认格式")
                 format_enum = OBFormat.Y16
 
             try:
@@ -395,7 +395,7 @@ class CameraRecorder:
                     actual_fps = depth_profile.get_fps()
 
                     print(f"    实际: {actual_width}x{actual_height} @ {actual_fps}fps")
-                    print(f"    ✓ 深度流配置成功")
+                    print(f"    深度流配置成功")
 
                     config_obj.enable_stream(depth_profile)
 
@@ -408,32 +408,32 @@ class CameraRecorder:
 
                     return True
                 else:
-                    print(f"    ❌ 配置不支持")
+                    print(f"     配置不支持")
                     return False
 
             except Exception as e:
-                print(f"    ❌ 配置失败: {e}")
+                print(f"     配置失败: {e}")
                 return False
 
         except Exception as e:
-            print(f"    ❌ 错误: {e}")
+            print(f"     错误: {e}")
             return False
 
     def _configure_rgb_stream(self, config_obj):
         """配置RGB流"""
         rgb_config = self.config["rgb"]
-        print(f"\n  🎨 RGB流配置:")
+        print(f"\n   RGB流配置:")
         print(f"    请求: {rgb_config['width']}x{rgb_config['height']} @ {rgb_config['fps']}fps ({rgb_config['format']})")
 
         try:
             profile_list = self.pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
             if profile_list is None:
-                print(f"    ❌ 无RGB传感器")
+                print(f"     无RGB传感器")
                 return False
 
             format_enum = format_str_to_enum(rgb_config['format'])
             if format_enum is None:
-                print(f"    ⚠ 格式 '{rgb_config['format']}' 无效,使用MJPG")
+                print(f"     格式 '{rgb_config['format']}' 无效,使用MJPG")
                 format_enum = OBFormat.MJPG
 
             try:
@@ -450,7 +450,7 @@ class CameraRecorder:
                     actual_fps = rgb_profile.get_fps()
 
                     print(f"    实际: {actual_width}x{actual_height} @ {actual_fps}fps")
-                    print(f"    ✓ RGB流配置成功")
+                    print(f"    RGB流配置成功")
 
                     config_obj.enable_stream(rgb_profile)
 
@@ -463,15 +463,15 @@ class CameraRecorder:
 
                     return True
                 else:
-                    print(f"    ❌ 配置不支持")
+                    print(f"    配置不支持")
                     return False
 
             except Exception as e:
-                print(f"    ❌ 配置失败: {e}")
+                print(f"    配置失败: {e}")
                 return False
 
         except Exception as e:
-            print(f"    ❌ 错误: {e}")
+            print(f"    错误: {e}")
             return False
 
     def start_recording_for_id(self, record_id, duration=None):
@@ -538,7 +538,7 @@ class CameraRecorder:
                 rgb_save_path
             )
 
-        print(f"\n🎬 {self.camera_name} 开始录制 ID: {record_id}, 预计时长: {self.recording_duration}秒")
+        print(f"\n{self.camera_name} 开始录制 ID: {record_id}, 预计时长: {self.recording_duration}秒")
 
     def stop_recording(self):
         """停止录制"""
@@ -556,11 +556,11 @@ class CameraRecorder:
             self.rgb_writer = None
 
         if self.raw_depth_writer:
-            print(f"  💾 保存的原始深度帧数: {self.raw_depth_writer.frame_counter}")
+            print(f"  保存的原始深度帧数: {self.raw_depth_writer.frame_counter}")
             self.raw_depth_writer = None
 
         elapsed = time.time() - self.recording_start_time if self.recording_start_time else 0
-        print(f"\n⏹ {self.camera_name} 停止录制 ID: {self.current_id}")
+        print(f"\n{self.camera_name} 停止录制 ID: {self.current_id}")
         print(f"  录制帧数: {self.frame_count}, 时长: {elapsed:.2f}秒")
 
         self.current_id = None
@@ -586,7 +586,7 @@ class CameraRecorder:
                 if self.recording_start_time:
                     elapsed = time.time() - self.recording_start_time
                     if elapsed >= self.recording_duration:
-                        print(f"\n⏰ {self.camera_name} 达到录制时长 ({self.recording_duration}秒), 自动停止")
+                        print(f"\n{self.camera_name} 达到录制时长 ({self.recording_duration}秒), 自动停止")
                         self.stop_recording()
                         return True
 
@@ -698,7 +698,7 @@ class CameraRecorder:
             self.pipeline.stop()
             self.is_initialized = False
 
-        print(f"\n📊 {self.camera_name} 总统计: 总采集帧数: {self.total_frames}")
+        print(f"\n{self.camera_name} 总统计: 总采集帧数: {self.total_frames}")
 
 
 # ==================== Flask服务 ====================
@@ -721,41 +721,41 @@ class CameraService:
             device_count = device_list.get_count()
 
             print("\n" + "=" * 70)
-            print("🎬 奥比中光多相机采集系统 - Flask服务模式")
+            print("奥比中光多相机采集系统 - Flask服务模式")
             print("=" * 70)
             print(f"检测到 {device_count} 个设备")
 
             if device_count == 0:
-                print("\n❌ 错误: 未检测到任何相机设备")
+                print("\n错误: 未检测到任何相机设备")
                 return False
 
             # 初始化每个启用的相机
             for cam_config in VIDEO_CONFIG["cameras"]:
                 if not cam_config["enabled"]:
-                    print(f"\n⏭ 跳过 {cam_config['name']} (未启用)")
+                    print(f"\n跳过 {cam_config['name']} (未启用)")
                     continue
 
                 if cam_config["device_index"] >= device_count:
-                    print(f"\n⚠ 警告: {cam_config['name']} 的设备索引 {cam_config['device_index']} 超出范围")
+                    print(f"\n警告: {cam_config['name']} 的设备索引 {cam_config['device_index']} 超出范围")
                     continue
 
                 recorder = CameraRecorder(cam_config, cam_config["device_index"])
                 if recorder.initialize(self.context, device_list):
                     self.recorders.append(recorder)
                 else:
-                    print(f"\n⚠ 警告: {cam_config['name']} 初始化失败")
+                    print(f"\n警告: {cam_config['name']} 初始化失败")
 
             if not self.recorders:
-                print("\n❌ 错误: 没有成功初始化的相机")
+                print("\n错误: 没有成功初始化的相机")
                 return False
 
             print("\n" + "=" * 70)
-            print(f"✅ 成功初始化 {len(self.recorders)} 个相机")
+            print(f"成功初始化 {len(self.recorders)} 个相机")
             print("=" * 70)
             return True
 
         except Exception as e:
-            print(f"❌ 初始化失败: {e}")
+            print(f"初始化失败: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -768,7 +768,7 @@ class CameraService:
         self.is_running = True
         self.capture_thread = Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
-        print("\n🎥 相机采集服务已启动(持续运行模式)")
+        print("\n相机采集服务已启动(持续运行模式)")
 
     def _capture_loop(self):
         """采集循环(持续运行)"""
@@ -811,7 +811,7 @@ class CameraService:
 
     def shutdown(self):
         """关闭服务"""
-        print("\n⏹ 关闭相机服务...")
+        print("\n关闭相机服务...")
         self.is_running = False
 
         if self.capture_thread:
@@ -821,7 +821,7 @@ class CameraService:
             for recorder in self.recorders:
                 recorder.shutdown()
 
-        print("✅ 相机服务已关闭")
+        print("相机服务已关闭")
 
 
 # ==================== Flask应用 ====================
@@ -835,7 +835,7 @@ if CORS_CONFIG["enabled"]:
          methods=CORS_CONFIG["methods"],
          allow_headers=CORS_CONFIG["allow_headers"],
          supports_credentials=True)
-    print("✓ CORS已启用,允许跨域请求")
+    print("CORS已启用,允许跨域请求")
 
 camera_service = CameraService()
 
@@ -962,12 +962,12 @@ def get_local_ip():
 def main():
     """主函数"""
     print("\n" + "=" * 70)
-    print("🚀 启动Flask相机采集服务 (网络监听模式)")
+    print("启动Flask相机采集服务 (网络监听模式)")
     print("=" * 70)
 
     # 初始化相机服务
     if not camera_service.initialize():
-        print("\n❌ 相机初始化失败,程序退出")
+        print("\n相机初始化失败,程序退出")
         return
 
     # 启动相机采集服务
@@ -977,14 +977,14 @@ def main():
     local_ip = get_local_ip()
 
     print("\n" + "=" * 70)
-    print("📡 Flask API服务启动中...")
-    print(f"\n🌐 网络访问地址:")
+    print("Flask API服务启动中...")
+    print(f"\n网络访问地址:")
     print(f"   本地访问: http://127.0.0.1:{FLASK_CONFIG['port']}")
     print(f"   局域网访问: http://{local_ip}:{FLASK_CONFIG['port']}")
     if FLASK_CONFIG['host'] == '0.0.0.0':
         print(f"   外网访问: http://<公网IP>:{FLASK_CONFIG['port']} (需要配置端口转发)")
 
-    print(f"\n📋 可用接口:")
+    print(f"\n可用接口:")
     print(f"  POST /api/start_recording - 开始录制")
     print(f"       示例: curl -X POST http://{local_ip}:{FLASK_CONFIG['port']}/api/start_recording \\")
     print(f"             -H 'Content-Type: application/json' \\")
@@ -994,10 +994,10 @@ def main():
     print(f"  GET  /api/health          - 健康检查")
 
     if CORS_CONFIG["enabled"]:
-        print(f"\n✓ CORS已启用,允许跨域请求")
+        print(f"\nCORS已启用,允许跨域请求")
 
     print("=" * 70)
-    print("\n💡 提示:")
+    print("\n提示:")
     print("  - 确保防火墙允许端口 {} 的入站连接".format(FLASK_CONFIG['port']))
     print("  - 如需外网访问,请配置路由器端口转发")
     print("  - 使用 Ctrl+C 停止服务")
@@ -1013,9 +1013,9 @@ def main():
             use_reloader=False  # 禁用自动重载,避免相机重复初始化
         )
     except KeyboardInterrupt:
-        print("\n\n⏹ 收到停止信号...")
+        print("\n\n收到停止信号...")
     except Exception as e:
-        print(f"\n❌ 服务器错误: {e}")
+        print(f"\n服务器错误: {e}")
         import traceback
         traceback.print_exc()
     finally:
