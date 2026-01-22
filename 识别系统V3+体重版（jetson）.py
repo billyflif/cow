@@ -1,4 +1,3 @@
-#TOTO: urL传输可能又错位
 import os
 import cv2
 import torch
@@ -13,6 +12,7 @@ import logging
 from datetime import datetime
 import requests
 import json
+import threading
 
 # 导入自定义模型
 from model import CowReIDModel
@@ -23,14 +23,18 @@ from cow_id_mapping import virtual_to_real_id
 
 # ===================== 可配置参数 =====================
 
-USE_CAMERA = False
+# ---- 调试开关 ----
+ENABLE_VOTING = True  # 跟踪投票开关：True=使用窗口投票机制，False=直接取每帧最高相似度ID并显示置信度
 
-VIDEO_PATH = r"E:\COW\Cow-Re-ID\0722\video1021\48.mp4"
+USE_CAMERA = True
 
-GALLERY_PATH = r"E:\COW\Obc-SDK-Test\gallery\video1022-frame-8"
+# VIDEO_PATH = r"D:\FFOutput\11.25\329.mp4"
+VIDEO_PATH = r"D:\FFOutput\test.mp4"
 
-YOLO_MODEL_PATH = "E:\COW\Obc-SDK-Test\checkpoints\yolo11n.pt"
-REID_MODEL_PATH = r"E:\COW\Obc-SDK-Test\checkpoints\best_model.pth"
+GALLERY_PATH = r"/home/nvidia/PycharmProjects/Obc_SDK/cow/gallery"
+
+YOLO_MODEL_PATH = "/home/nvidia/PycharmProjects/Obc_SDK/cow/yolo11n.pt"
+REID_MODEL_PATH = r"/home/nvidia/PycharmProjects/Obc_SDK/cow/best_model_state_dict.pth"
 
 SIMILARITY_THRESH = 0.60
 CONFIDENCE_THRESH = 0.03
@@ -43,9 +47,10 @@ MEASUREMENT_THICKNESS = 2  # <--- 体尺指标粗细
 TRACK_HISTORY = 30
 DISPLAY_WIDTH = 1280
 DISPLAY_HEIGHT = 720
-SHOW_FPS = False  # <--- 关闭FPS显示
+SHOW_FPS = True  # True=显示FPS，False=不显示
+FPS_SMOOTHING = 0.9  # FPS指数滑动平均的平滑系数(越大越平滑)
 
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 USE_ORBBEC = True
 
 LOG_DIR = "./logs"
@@ -54,33 +59,47 @@ ENABLE_LOGGING = True
 USE_CLASS_FILTER = False
 DETECT_CLASSES = [19, 20, 21, 22, 23]
 
-MAX_GALLERY_IMAGES = 15
+MAX_GALLERY_IMAGES = 20
 
 # ---- 平滑与稳定参数 ----
 SMOOTH_WINDOW = 12
-MIN_VOTE_SAMPLES = 5
+MIN_VOTE_SAMPLES = 3
 REID_BATCH_SIZE = 1
 
 # 视频保存
-SAVE_VIDEO = True
+SAVE_VIDEO = False
 OUTPUT_VIDEO_DIR = "./output_videos"
 VIDEO_FPS = 10
 
 # 边缘过滤
-EDGE_FILTER_RATIO = 0.08
-MIN_BOX_WIDTH_RATIO = 0.04
+EDGE_FILTER_RATIO = 0.15
+MIN_BOX_WIDTH_RATIO = 0.15
+#检测框的左边界 x1 必须大于画面宽度的 2%，才认为牛不再贴着左边缘。
+ENTRY_LEFT_MARGIN_RATIO = 0.05
+ENTRY_RIGHT_MARGIN_RATIO = 0.05
+#检测框宽度 box_width 需要至少占画面宽度的 40%，才算牛的主体已经进入。
+# FULL_BOX_WIDTH_RATIO = 0.4
 
 # <--- 新增：中间区域定义（用于体尺数据显示）
-CENTER_REGION_RATIO = 0.3  # 画面中间60%区域（左右各留20%）
+CENTER_REGION_RATIO = 0.15  # 画面中间60%区域（左右各留20%）
+
+# <--- 新增：中心裁剪开关
+ENABLE_CENTER_CROP = True  # 中心裁剪开关：True=启用裁剪仅保留牛肚子区域，False=不裁剪
+CROP_TOP_RATIO = 0.1      # 上部裁剪比例（裁掉上部15%）
+CROP_BOTTOM_RATIO = 0.1   # 下部裁剪比例（裁掉下部15%）
+CROP_LEFT_RATIO = 0.20     # 左侧裁剪比例（裁掉左侧20%）
+CROP_RIGHT_RATIO = 0.20    # 右侧裁剪比例（裁掉右侧20%）
 
 # ID稳定性增强
 HIGH_CONF_THRESH = 0.75
-LOCK_FRAME_COUNT = 6
+LOCK_FRAME_COUNT = 1
 LOCKED_ID_DECAY = 60
 UNLOCK_REQUIRE_FRAMES = 20
+MIN_TRACK_AGE_FOR_LOCK = 3
+MIN_LOCK_BOX_WIDTH_RATIO = 0.4
 
 # 初始帧过滤
-INITIAL_FRAMES_SKIP = 10
+INITIAL_FRAMES_SKIP = 5
 INITIAL_HIGH_CONF_THRESH = 0.80
 
 # 跟踪丢失容忍
@@ -96,7 +115,7 @@ LOCKED_COLOR = (0, 0, 255)  # 红色 (BGR格式)
 # API配置
 API_URLS = [
     "https://lezhi.muguanjia.net/api/manage/cow_body_log/snycData",
-    "https://yz.muguanjia.net/api/manage/cow_body_log/snycData"
+    "https://cf.muguanjia.net/api/manage/cow_body_log/snycData"
 ]
 API_TIMEOUT = 5  # API请求超时时间（秒）
 
@@ -121,25 +140,6 @@ def setup_logger():
 
 
 logger = setup_logger()
-
-
-def minimize_all_windows():
-    """最小化所有窗口，返回桌面"""
-    try:
-        import pygetwindow as gw
-        windows = gw.getAllWindows()
-        for window in windows:
-            if window.title and window.isActive:
-                try:
-                    window.minimize()
-                except:
-                    pass
-        time.sleep(0.5)  # 等待窗口最小化完成
-        logger.info("已最小化所有窗口，返回桌面")
-    except ImportError:
-        logger.warning("pygetwindow未安装，无法最小化窗口。可使用: pip install pygetwindow")
-    except Exception as e:
-        logger.warning(f"最小化窗口失败: {e}")
 
 
 def send_measurement_data(ear_tag, measurements_data):
@@ -229,8 +229,33 @@ class OrbbecCamera:
             if frames is None: return False, None
             color_frame = frames.get_color_frame()
             if color_frame is None: return False, None
+
             raw_data = np.frombuffer(color_frame.get_data(), dtype=np.uint8)
-            color_data = cv2.imdecode(raw_data, cv2.IMREAD_COLOR)
+            width = getattr(color_frame, "get_width", lambda: None)()
+            height = getattr(color_frame, "get_height", lambda: None)()
+            fmt = None
+            if hasattr(color_frame, "get_format"):
+                try:
+                    fmt = color_frame.get_format()
+                except Exception:
+                    fmt = None
+            fmt_str = str(fmt).upper() if fmt is not None else ""
+
+            color_data = None
+            if width and height:
+                expected_bgr = int(width) * int(height) * 3
+                expected_yuyv = int(width) * int(height) * 2
+
+                if raw_data.size == expected_bgr:
+                    color_data = raw_data.reshape((int(height), int(width), 3))
+                    if "RGB" in fmt_str and "BGR" not in fmt_str:
+                        color_data = cv2.cvtColor(color_data, cv2.COLOR_RGB2BGR)
+                elif raw_data.size == expected_yuyv:
+                    yuyv = raw_data.reshape((int(height), int(width), 2))
+                    color_data = cv2.cvtColor(yuyv, cv2.COLOR_YUV2BGR_YUY2)
+
+            if color_data is None:
+                color_data = cv2.imdecode(raw_data, cv2.IMREAD_COLOR)
             return (color_data is not None), color_data
         except Exception as e:
             logger.error(f"读取奥比中光帧失败: {e}")
@@ -254,6 +279,7 @@ class GalleryManager:
         self.max_images = max_images
         self.gallery_features = []
         self.gallery_ids = []
+        self.gallery_tensor = None
         self.id_names = {}  # gid -> 真实ID的映射
         self.virtual_to_gid = {}  # 虚拟ID后缀 -> gid的映射
         self.transform = transforms.Compose([
@@ -292,29 +318,48 @@ class GalleryManager:
             logger.info(f"Gallery: 虚拟ID {virtual_id_suffix} -> 真实ID {real_id}")
 
         logger.info(f"Gallery加载完成: {len(individuals)}个体, {len(self.gallery_features)}特征")
+        if self.gallery_features:
+            self.gallery_tensor = torch.stack(self.gallery_features).to(self.device)
 
     def _extract_feature(self, image):
+        # 应用中心裁剪（如果启用）
+        image = center_crop_image(image)
         x = self.transform(image).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            f = self.reid_model(x).cpu().numpy().flatten()
-        f = f / (np.linalg.norm(f) + 1e-8)
-        return torch.from_numpy(f)
+            f = self.reid_model(x)
+            f = torch.nn.functional.normalize(f, dim=1)
+        return f.squeeze(0)
 
     def match(self, query_feats, threshold):
-        if not self.gallery_features or not query_feats:
+        if self.gallery_tensor is None:
             return [], []
-        q = torch.stack(query_feats)
-        g = torch.stack(self.gallery_features)
-        sim = torch.nn.functional.cosine_similarity(q.unsqueeze(1), g.unsqueeze(0), dim=2)
+        if query_feats is None:
+            return [], []
+
+        if isinstance(query_feats, (list, tuple)):
+            if len(query_feats) == 0:
+                return [], []
+            q = torch.stack(query_feats)
+        else:
+            q = query_feats
+
+        if not isinstance(q, torch.Tensor) or q.numel() == 0:
+            return [], []
+
+        q = q.to(self.gallery_tensor.device)
+        q = torch.nn.functional.normalize(q, dim=1)
+        sim = torch.matmul(q, self.gallery_tensor.T)
         max_sim, idx = sim.max(dim=1)
         matched_ids, confs = [], []
-        for i, s in enumerate(max_sim):
+        idx_list = idx.tolist()
+        sim_list = max_sim.tolist()
+        for i, s in zip(idx_list, sim_list):
             if s > threshold:
-                gid = self.gallery_ids[idx[i]]
+                gid = self.gallery_ids[i]
                 matched_ids.append(gid)
             else:
                 matched_ids.append(-1)
-            confs.append(s.item())
+            confs.append(float(s))
         return matched_ids, confs
 
     def get_name(self, gid):
@@ -323,11 +368,53 @@ class GalleryManager:
 
 
 # ===================== 辅助函数 =====================
+def center_crop_image(image):
+    """
+    对图像进行中心裁剪，保留中间的牛肚子区域
+
+    参数:
+    - image: PIL Image 或 numpy array (OpenCV格式)
+
+    返回:
+    - 裁剪后的图像（与输入格式相同）
+    """
+    if not ENABLE_CENTER_CROP:
+        return image
+
+    # 判断输入格式
+    is_pil = isinstance(image, Image.Image)
+
+    if is_pil:
+        width, height = image.size
+    else:
+        height, width = image.shape[:2]
+
+    # 计算裁剪区域
+    left = int(width * CROP_LEFT_RATIO)
+    right = int(width * (1 - CROP_RIGHT_RATIO))
+    top = int(height * CROP_TOP_RATIO)
+    bottom = int(height * (1 - CROP_BOTTOM_RATIO))
+
+    # 确保裁剪区域有效
+    if left >= right or top >= bottom:
+        return image
+
+    # 裁剪
+    if is_pil:
+        return image.crop((left, top, right, bottom))
+    else:
+        return image[top:bottom, left:right]
+
+
 def batch_extract_features(crops, model, device, transform):
-    if not crops: return []
+    if not crops:
+        return None
     batch_tensors = []
     for img in crops:
+        # 转换为PIL格式
         img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        # 应用中心裁剪（如果启用）
+        img = center_crop_image(img)
         t = transform(img)
         batch_tensors.append(t)
     x = torch.stack(batch_tensors).to(device)
@@ -335,11 +422,9 @@ def batch_extract_features(crops, model, device, transform):
     with torch.no_grad():
         for i in range(0, len(x), REID_BATCH_SIZE):
             part = model(x[i:i + REID_BATCH_SIZE])
-            f = part.cpu().numpy()
-            f = f / (np.linalg.norm(f, axis=1, keepdims=True) + 1e-8)
-            feats.append(f)
-    feats = np.vstack(feats)
-    return [torch.from_numpy(f) for f in feats]
+            part = torch.nn.functional.normalize(part, dim=1)
+            feats.append(part)
+    return torch.cat(feats, dim=0) if feats else None
 
 
 def generate_measurements_with_noise(base_measurements):
@@ -392,29 +477,32 @@ class CowReIDSystem:
         self.track_no_match_frames = defaultdict(int)
         self.track_disappeared_frames = defaultdict(int)
 
+        self.track_age = defaultdict(int)
+
         # 跟踪丢失管理
         self.track_lost_frames = defaultdict(int)
         self.track_last_box = {}
         self.track_last_gid = {}
         self.track_last_sim = {}
 
-        # 体尺数据管理
-        self.track_measurements = {}  # 存储每个track的体尺数据（锁定后固定）
+        # 体尺/体重数据管理
+        self.track_weight = {}  # 存储每个track的体重
         self.track_full_measurements = {}  # 存储完整的体尺数据（用于API发送）
         self.sent_measurements = set()  # 记录已发送的ID，避免重复发送
 
         # 体尺数据延迟消失管理
-        self.last_displayed_measurements = None  # 最后显示的体尺数据
+        self.last_displayed_weight = None  # 最后显示的体重数据
         self.last_displayed_cow_name = None  # 最后显示的牛名称
-        self.measurement_display_counter = 0  # 体尺数据显示计数器（ID消失后开始计数）
-        self.measurement_persist_frames = 80  # ID消失后体尺数据继续显示的帧数
+        self.measurement_display_counter = 0  # 体重数据显示计数器（ID消失后开始计数）
+        self.measurement_persist_frames = 80  # ID消失后体重数据继续显示的帧数
 
         self.transform = transforms.Compose([
             LetterBox(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        self.fps_start, self.fps_count, self.fps = time.time(), 0, 0
+        self._fps_last_time = time.perf_counter()
+        self.fps = 0.0
         self.active_track_ids = set()
         self.frame_count = 0
 
@@ -426,6 +514,7 @@ class CowReIDSystem:
             try:
                 ckpt = torch.load(REID_MODEL_PATH, map_location='cpu', weights_only=False)
             except TypeError:
+                # torch<2.0 has no weights_only kwarg; it would be forwarded to pickle Unpickler and crash.
                 ckpt = torch.load(REID_MODEL_PATH, map_location='cpu')
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
             self.reid_model.load_state_dict(state, strict=False)
@@ -482,9 +571,18 @@ class CowReIDSystem:
         left_edge = frame_width * EDGE_FILTER_RATIO
         right_edge = frame_width * (1 - EDGE_FILTER_RATIO)
         is_at_edge = box_center_x < left_edge or box_center_x > right_edge
+
         box_width = x2 - x1
         is_too_small = box_width < frame_width * MIN_BOX_WIDTH_RATIO
-        return is_at_edge or is_too_small
+
+        # 若框左侧仍然非常靠近画面最左边，且宽度尚未达到“基本完全进入”要求，则视为边缘干扰，第二个条件暂时屏蔽
+        left_margin_threshold = frame_width * ENTRY_LEFT_MARGIN_RATIO
+        right_margin_threshold = frame_width * (1 - ENTRY_RIGHT_MARGIN_RATIO)
+        # not_fully_entered = (x1 <= left_margin_threshold) and (box_width < frame_width * FULL_BOX_WIDTH_RATIO)
+        not_fully_entered_left = (x1 <= left_margin_threshold)
+        not_fully_entered_right = (x2 >= right_margin_threshold)
+
+        return is_at_edge or is_too_small or not_fully_entered_left or not_fully_entered_right
 
     def _is_center_box(self, box, frame_width):
         """检查box是否在画面中间区域"""
@@ -494,11 +592,26 @@ class CowReIDSystem:
         right_boundary = frame_width * (1 - CENTER_REGION_RATIO)
         return left_boundary <= box_center_x <= right_boundary
 
-    def _is_valid_box(self, box):
-        """检查box是否有效（面积足够大）"""
+    def _is_valid_box(self, box, frame_width=None, frame_height=None):
+        """检查box是否有效（面积足够大，且宽高满足最小比例要求）"""
         x1, y1, x2, y2 = box
         area = (x2 - x1) * (y2 - y1)
-        return area >= MIN_BOX_AREA
+
+        # 检查面积
+        if area < MIN_BOX_AREA:
+            return False
+
+        # 检查宽度和高度是否小于画面的三分之一（过滤误检测）
+        if frame_width is not None and frame_height is not None:
+            box_width = x2 - x1
+            box_height = y2 - y1
+            min_width = frame_width / 6
+            min_height = frame_height / 6
+
+            if box_width < min_width or box_height < min_height:
+                return False
+
+        return True
 
     def _get_voted_label(self, vote_deque):
         """从投票缓冲中选出最可能的ID及其平均置信度"""
@@ -535,22 +648,23 @@ class CowReIDSystem:
         self.track_disappeared_frames.pop(tid, None)
         self.track_history.pop(tid, None)
         self.track_lost_frames.pop(tid, None)
+        self.track_age.pop(tid, None)
         self.track_last_box.pop(tid, None)
         self.track_last_gid.pop(tid, None)
         self.track_last_sim.pop(tid, None)
-        self.track_measurements.pop(tid, None)
+        self.track_weight.pop(tid, None)
         self.track_full_measurements.pop(tid, None)
 
-    def _get_or_generate_measurements(self, tid, real_cow_id):
+    def _get_or_generate_weight(self, tid, real_cow_id):
         """
-        获取或生成体尺数据
-        如果track已有数据则返回，否则生成新的带噪声的数据
+        获取或生成体重及完整体尺数据
+        如果track已有数据则返回，否则生成新的数据
         使用真实ID查询体尺数据
 
-        返回: (显示用的4个测量值, 完整的体尺数据字典)
+        返回: (体重, 完整的体尺数据字典)
         """
-        if tid in self.track_measurements:
-            return self.track_measurements[tid], self.track_full_measurements[tid]
+        if tid in self.track_weight:
+            return self.track_weight[tid], self.track_full_measurements[tid]
 
         # 使用真实ID查找该牛的基础体尺数据
         if real_cow_id in COW_BODY_MEASUREMENTS:
@@ -565,17 +679,16 @@ class CowReIDSystem:
             cannon_circ = noisy_body[3] if len(noisy_body) > 3 else None
             cross_height = noisy_body[4] if len(noisy_body) > 4 else None
 
-            # 显示: 体高、体斜长、胸围、十字部高
-            display_measurements = [
-                body_height,
-                body_length,
-                chest_girth,
-                cross_height,
-            ]
+            # 为体重添加5kg以内的随机浮动
+            if weight_value is not None:
+                weight_fluctuation = np.random.uniform(-5, 5)
+                weight_value_with_noise = weight_value + weight_fluctuation
+                weight_value_with_noise = round(weight_value_with_noise, 1)
+            else:
+                weight_value_with_noise = None
 
-            # 完整数据字典（用于API）
             full_data_dict = {
-                "Weight": _value_or_zero(weight_value),
+                "Weight": _value_or_zero(weight_value_with_noise),
                 "BodyHeight": _value_or_zero(body_height),
                 "ChestAround": _value_or_zero(chest_girth),
                 "BellyAround": _value_or_zero(cannon_circ),
@@ -584,66 +697,48 @@ class CowReIDSystem:
                 "CrossHeight": _value_or_zero(cross_height),
             }
 
-            self.track_measurements[tid] = display_measurements
+            self.track_weight[tid] = weight_value_with_noise
             self.track_full_measurements[tid] = full_data_dict
 
-            logger.info(f"为Track {tid} (真实ID: {real_cow_id}) 生成体尺数据")
+            logger.info(f"为Track {tid} (真实ID: {real_cow_id}) 生成体重/体尺数据")
 
-            # 将识别到的体尺数据发送到API（本地视频与相机模式均上传）
-            if real_cow_id not in self.sent_measurements:
-                send_measurement_data(real_cow_id, full_data_dict)
+            # 如果使用相机且该ID未发送过数据，则发送到API
+            if USE_CAMERA and real_cow_id not in self.sent_measurements:
                 self.sent_measurements.add(real_cow_id)
+                threading.Thread(target=send_measurement_data, args=(real_cow_id, full_data_dict), daemon=True).start()
 
-            return display_measurements, full_data_dict
+            return weight_value_with_noise, full_data_dict
 
         return None, None
 
-    def _draw_top_measurements(self, frame, cow_name=None, measurements=None):
+    def _draw_weight_banner(self, frame, weight=None):
         """
-        在画面顶部绘制体尺数据标签（英文），满足条件时显示数值
-        指标名称常驻，数值有条件显示
-        只显示4个参数：身高、胸围、体斜长、体直长
+        在画面顶部绘制体重展示条，仅显示体重指标
         """
-        # 绿色文字
-        text_color = (0, 255, 0)
-
-        # 体尺数据 - 居中紧凑显示
         frame_width = frame.shape[1]
-        y_offset = 35  # 起始位置
-        line_spacing = 40  # 行间距
+        banner_width = 520
+        banner_height = 70
+        x_start = max(20, (frame_width - banner_width) // 2)
+        y_start = 20
 
-        # 调整布局以避免重叠
-        column_width = 280
-        column_gap = 80
-        total_block_width = (column_width * 2) + column_gap
-        start_x = max(10, (frame_width - total_block_width) // 2)
-        x_left = start_x
-        x_right = start_x + column_width + column_gap
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x_start, y_start), (x_start + banner_width, y_start + banner_height),
+                      (0, 0, 0), -1)
+        cv2.rectangle(overlay, (x_start, y_start), (x_start + banner_width, y_start + banner_height),
+                      (0, 255, 0), 2)
+        cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, frame)
 
-        # ==================== 修改：使用英文标签以避免乱码 ====================
-
-        # 直接定义要显示的英文标签列表
-        display_labels = ["BodyHeight", "Body Length", "Chest Girth", "Cross Height"]
-
-        # =================================================================
-
-        for i, label in enumerate(display_labels):
-            # 2x2布局
-            if i < 2:  # 第一行
-                x_pos = x_left if i % 2 == 0 else x_right
-                y_pos = y_offset
-            else:  # 第二行
-                x_pos = x_left if i % 2 == 0 else x_right
-                y_pos = y_offset + line_spacing
-
-            # 根据是否有数据决定显示内容
-            if measurements and i < len(measurements) and measurements[i] is not None:
-                measurement_text = f"{label}: {measurements[i]:>6.1f}"
-            else:
-                measurement_text = f"{label}:"
-
-            cv2.putText(frame, measurement_text, (x_pos, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, MEASUREMENT_FONT_SCALE, text_color, MEASUREMENT_THICKNESS)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        if weight is not None:
+            weight_text = f"Weight: {weight:0.1f} kg"
+        else:
+            weight_text = "Weight: --"
+        weight_scale = MEASUREMENT_FONT_SCALE * 1.5
+        weight_thickness = MEASUREMENT_THICKNESS + 2
+        weight_size = cv2.getTextSize(weight_text, font, weight_scale, weight_thickness)[0]
+        weight_x = x_start + (banner_width - weight_size[0]) // 2
+        weight_y = y_start + (banner_height + weight_size[1]) // 2
+        cv2.putText(frame, weight_text, (weight_x, weight_y), font, weight_scale, (0, 255, 0), weight_thickness)
 
     def process_frame(self, frame):
         self.frame_count += 1
@@ -667,10 +762,12 @@ class CowReIDSystem:
         self.active_track_ids = set(track_ids)
         self._update_tracker_disappearance()
 
-        # 过滤有效检测
+        # 过滤有效检测（先做框过滤，再提取特征，避免与中心裁剪逻辑冲突）
         crops, valid_indices = [], []
         for i, box in enumerate(boxes):
-            if not self._is_valid_box(box):
+            if not self._is_valid_box(box, frame_width, frame_height):
+                continue
+            if self._is_edge_box(box, frame_width):
                 continue
             x1, y1, x2, y2 = map(int, box)
             crop = frame[y1:y2, x1:x2]
@@ -690,16 +787,17 @@ class CowReIDSystem:
 
         # <--- 用于存储中间区域的体尺信息（只显示一个）
         center_cow_name = None
-        center_measurements = None
+        center_weight = None
 
         # 处理当前帧的检测
         for i, (box, tid) in enumerate(zip(boxes, track_ids)):
-            if not self._is_valid_box(box):
+            if not self._is_valid_box(box, frame_width, frame_height):
                 continue
 
             # 重置lost计数
             self.track_lost_frames[tid] = 0
             self.track_last_box[tid] = box
+            self.track_age[tid] += 1
 
             is_edge = self._is_edge_box(box, frame_width)
             is_center = self._is_center_box(box, frame_width)
@@ -711,107 +809,135 @@ class CowReIDSystem:
                 continue
             else:
                 gid, sim = match_map.get(i, (-1, 0.0))
-                self.track_vote_buffer[tid].append((gid, sim))
 
-                is_initial_frame = self.frame_count <= INITIAL_FRAMES_SKIP
-                required_conf = INITIAL_HIGH_CONF_THRESH if is_initial_frame else HIGH_CONF_THRESH
+                # ========== 根据ENABLE_VOTING选择不同的识别模式 ==========
+                if not ENABLE_VOTING:
+                    # 非投票模式：直接使用当前帧的最高相似度ID
+                    final_gid = gid if gid != -1 else None
+                    final_sim = sim
 
-                # ID锁定逻辑
-                if tid in self.track_locked_id:
-                    locked_gid = self.track_locked_id[tid]
-
-                    if gid == -1:
-                        self.track_no_match_frames[tid] += 1
-                    else:
-                        self.track_no_match_frames[tid] = 0
-
-                    if self.track_no_match_frames[tid] > UNLOCK_REQUIRE_FRAMES:
-                        logger.warning(f"Track {tid} ID {self.gallery.get_name(locked_gid)} 解锁 (连续未匹配)")
-                        self.track_locked_id.pop(tid, None)
-                        self.track_high_conf_count[tid] = 0
-                        self.track_measurements.pop(tid, None)
-                        self.track_full_measurements.pop(tid, None)
-                        final_gid, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
-                    else:
-                        final_gid = locked_gid
-                        _, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
-
+                    # 绘制检测框和ID（无论是否匹配）
                     if final_gid is not None:
-                        self.track_last_gid[tid] = final_gid
-                        self.track_last_sim[tid] = final_sim
+                        real_id = self.gallery.get_name(final_gid)
+                        color = LOCKED_COLOR  # 统一红色
+
+                        # 获取或生成体重数据（使用真实ID）
+                        weight_value, _ = self._get_or_generate_weight(tid, real_id)
+
+                        # 如果在中间区域且还没有记录体重信息，则记录
+                        if is_center and center_cow_name is None and weight_value is not None:
+                            center_cow_name = real_id
+                            center_weight = weight_value
+
+                        # 构建标签文本（显示真实ID + 置信度）
+                        label_text = f"ID: {real_id} ({final_sim:.2f})"
+
+                        # 绘制检测框
+                        thickness = 3
+                        x1, y1, x2, y2 = map(int, box)
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+
+                        # 绘制ID标签（增大字体和粗细）
+                        cv2.putText(annotated_frame, label_text, (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, ID_LABEL_THICKNESS)
+
                 else:
-                    final_gid, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
+                    # 投票模式：使用原有的投票和锁定逻辑
+                    self.track_vote_buffer[tid].append((gid, sim))
 
-                    if final_gid is not None and final_sim >= required_conf:
-                        self.track_high_conf_count[tid] += 1
+                    is_initial_frame = self.frame_count <= INITIAL_FRAMES_SKIP
+                    required_conf = INITIAL_HIGH_CONF_THRESH if is_initial_frame else HIGH_CONF_THRESH
+
+                    # ID锁定逻辑
+                    if tid in self.track_locked_id:
+                        locked_gid = self.track_locked_id[tid]
+
+                        if gid == -1:
+                            self.track_no_match_frames[tid] += 1
+                        else:
+                            self.track_no_match_frames[tid] = 0
+
+                        if self.track_no_match_frames[tid] > UNLOCK_REQUIRE_FRAMES:
+                            logger.warning(f"Track {tid} ID {self.gallery.get_name(locked_gid)} 解锁 (连续未匹配)")
+                            self.track_locked_id.pop(tid, None)
+                            self.track_high_conf_count[tid] = 0
+                            self.track_weight.pop(tid, None)
+                            self.track_full_measurements.pop(tid, None)
+                            final_gid, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
+                        else:
+                            final_gid = locked_gid
+                            _, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
+
+                        if final_gid is not None:
+                            self.track_last_gid[tid] = final_gid
+                            self.track_last_sim[tid] = final_sim
                     else:
-                        self.track_high_conf_count[tid] = 0
+                        final_gid, final_sim = self._get_voted_label(self.track_vote_buffer[tid])
 
-                    if not is_initial_frame and self.track_high_conf_count[tid] >= LOCK_FRAME_COUNT:
-                        self.track_locked_id[tid] = final_gid
-                        self.track_no_match_frames[tid] = 0
-                        logger.info(
-                            f"Track {tid} ID锁定为 -> {self.gallery.get_name(final_gid)} (置信度: {final_sim:.3f})")
+                        box_width_ratio = float((box[2] - box[0]).item()) / frame_width
+                        can_consider_lock = (
+                            (not is_initial_frame)
+                            and (self.track_age[tid] >= MIN_TRACK_AGE_FOR_LOCK)
+                            and (box_width_ratio >= MIN_LOCK_BOX_WIDTH_RATIO)
+                        )
 
-                    if final_gid is not None:
-                        self.track_last_gid[tid] = final_gid
-                        self.track_last_sim[tid] = final_sim
+                        if can_consider_lock and final_gid is not None and final_sim >= required_conf:
+                            self.track_high_conf_count[tid] += 1
+                        else:
+                            self.track_high_conf_count[tid] = 0
 
-                # 只绘制锁定的ID
-                if tid in self.track_locked_id:
-                    final_gid = self.track_locked_id[tid]
-                    real_id = self.gallery.get_name(final_gid)  # 获取真实ID
-                    color = LOCKED_COLOR  # 统一红色
+                        if can_consider_lock and self.track_high_conf_count[tid] >= LOCK_FRAME_COUNT:
+                            self.track_locked_id[tid] = final_gid
+                            self.track_no_match_frames[tid] = 0
+                            logger.info(
+                                f"Track {tid} ID锁定为 -> {self.gallery.get_name(final_gid)} (置信度: {final_sim:.3f})")
 
-                    # 获取或生成体尺数据（使用真实ID）
-                    measurements, _ = self._get_or_generate_measurements(tid, real_id)
+                        if final_gid is not None:
+                            self.track_last_gid[tid] = final_gid
+                            self.track_last_sim[tid] = final_sim
 
-                    # <--- 如果在中间区域且还没有记录体尺信息，则记录
-                    if is_center and center_cow_name is None and measurements:
-                        center_cow_name = real_id
-                        center_measurements = measurements
+                    # 只绘制锁定的ID
+                    if tid in self.track_locked_id:
+                        final_gid = self.track_locked_id[tid]
+                        real_id = self.gallery.get_name(final_gid)  # 获取真实ID
+                        color = LOCKED_COLOR  # 统一红色
 
-                    # 构建标签文本（显示真实ID）
-                    label_text = f"ID: {real_id}"
+                        # 获取或生成体重数据（使用真实ID）
+                        weight_value, _ = self._get_or_generate_weight(tid, real_id)
 
-                    # 绘制检测框
-                    thickness = 3
-                    x1, y1, x2, y2 = map(int, box)
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+                        # <--- 如果在中间区域且还没有记录体重信息，则记录
+                        if is_center and center_cow_name is None and weight_value is not None:
+                            center_cow_name = real_id
+                            center_weight = weight_value
 
-                    # 绘制ID标签（增大字体和粗细）
-                    cv2.putText(annotated_frame, label_text, (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, ID_LABEL_THICKNESS)
+                        # 构建标签文本（显示真实ID）
+                        label_text = f"ID: {real_id}"
 
-        # <--- 体尺数据延迟消失逻辑
-        # 如果有中间区域的牛，更新显示并重置计数器
-        if center_cow_name and center_measurements:
-            self.last_displayed_measurements = center_measurements
+                        # 绘制检测框
+                        thickness = 3
+                        x1, y1, x2, y2 = map(int, box)
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+
+                        # 绘制ID标签（增大字体和粗细）
+                        cv2.putText(annotated_frame, label_text, (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, ID_LABEL_THICKNESS)
+
+        # <--- 体重数据延迟消失逻辑
+        if center_cow_name is not None and center_weight is not None:
+            self.last_displayed_weight = center_weight
             self.last_displayed_cow_name = center_cow_name
             self.measurement_display_counter = 0  # 重置计数器
-            self._draw_top_measurements(annotated_frame, center_cow_name, center_measurements)
+            self._draw_weight_banner(annotated_frame, center_weight)
         else:
-            # 没有中间区域的牛，检查是否需要继续显示上次的数据
-            if self.last_displayed_measurements is not None:
-                if self.measurement_display_counter < self.measurement_persist_frames:
-                    # 继续显示上次的数据
-                    self._draw_top_measurements(annotated_frame, self.last_displayed_cow_name,
-                                                self.last_displayed_measurements)
-                    self.measurement_display_counter += 1
-                else:
-                    # 超过30帧，清除显示
-                    self._draw_top_measurements(annotated_frame)  # 只显示标签名称
+            if self.last_displayed_weight is not None and self.measurement_display_counter < self.measurement_persist_frames:
+                self._draw_weight_banner(annotated_frame, self.last_displayed_weight)
+                self.measurement_display_counter += 1
             else:
-                # 从未显示过体尺数据，只显示标签名称
-                self._draw_top_measurements(annotated_frame)
+                self._draw_weight_banner(annotated_frame)
 
         return annotated_frame
 
     def run(self):
-        # 在打开识别窗口前，先最小化所有窗口返回桌面
-        if USE_CAMERA:
-            minimize_all_windows()
-
         cv2.namedWindow("Cow ReID System v3.3 (Enhanced)", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Cow ReID System v3.3 (Enhanced)", DISPLAY_WIDTH, DISPLAY_HEIGHT)
 
@@ -821,11 +947,27 @@ class CowReIDSystem:
                 logger.warning("视频结束或无法获取帧")
                 break
 
-            frame = cv2.resize(frame, (self.video_width, self.video_height))
+            if (frame.shape[1], frame.shape[0]) != (self.video_width, self.video_height):
+                frame = cv2.resize(frame, (self.video_width, self.video_height))
             annotated = self.process_frame(frame)
 
+            if SHOW_FPS:
+                cv2.putText(
+                    annotated,
+                    f"FPS: {self.fps:.1f}",
+                    (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2,
+                    (0, 255, 0),
+                    2,
+                )
+
+            # 保存视频：摄像头模式保存原始帧，视频文件模式保存带标注的帧
             if self.video_writer is not None:
-                self.video_writer.write(annotated)
+                if USE_CAMERA:
+                    self.video_writer.write(frame)  # 摄像头：保存原始视频
+                else:
+                    self.video_writer.write(annotated)  # 视频文件：保存带检测框的视频
 
             cv2.imshow("Cow ReID System v3.3 (Enhanced)", annotated)
 
@@ -834,6 +976,16 @@ class CowReIDSystem:
 
             k = cv2.waitKey(1) & 0xFF
             if k == ord('q'): break
+
+            now = time.perf_counter()
+            dt = now - self._fps_last_time
+            self._fps_last_time = now
+            if dt > 0:
+                instant_fps = 1.0 / dt
+                if self.fps <= 0:
+                    self.fps = instant_fps
+                else:
+                    self.fps = (FPS_SMOOTHING * self.fps) + ((1 - FPS_SMOOTHING) * instant_fps)
 
         self.cleanup()
 

@@ -392,7 +392,10 @@ class CowReIDSystem:
         self.detector = YOLO(YOLO_MODEL_PATH)
         self.reid_model = CowReIDModel('MegaDescriptor-S-224', use_lightweight=False)
         try:
-            ckpt = torch.load(REID_MODEL_PATH, map_location='cpu', weights_only=False)
+            try:
+                ckpt = torch.load(REID_MODEL_PATH, map_location='cpu', weights_only=False)
+            except TypeError:
+                ckpt = torch.load(REID_MODEL_PATH, map_location='cpu')
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
             self.reid_model.load_state_dict(state, strict=False)
             self.reid_model = self.reid_model.to(self.device).eval()

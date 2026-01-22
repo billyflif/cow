@@ -115,12 +115,7 @@ def main() -> None:
             "tensor-only weights file to avoid numpy pickle dependency issues (e.g., numpy._core)."
         )
     )
-    parser.add_argument(
-        "--in",
-        dest="in_path",
-        required=True,
-        help="Input .pth checkpoint path",
-    )
+    parser.add_argument("--in", dest="in_path", default="C:\Users\47038\Desktop\123\31231231\best_model.pth", help="Input .pth checkpoint path")
     parser.add_argument(
         "--out",
         dest="out_path",

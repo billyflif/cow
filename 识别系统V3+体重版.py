@@ -17,7 +17,7 @@ import threading
 # 导入自定义模型
 from model import CowReIDModel
 # 导入体尺数据
-from cow_body_measurements_yaan import COW_BODY_MEASUREMENTS, MEASUREMENT_LABELS
+from cow_body_measurements import COW_BODY_MEASUREMENTS, MEASUREMENT_LABELS
 # 导入ID映射配置
 from cow_id_mapping import virtual_to_real_id
 
@@ -26,15 +26,15 @@ from cow_id_mapping import virtual_to_real_id
 # ---- 调试开关 ----
 ENABLE_VOTING = True  # 跟踪投票开关：True=使用窗口投票机制，False=直接取每帧最高相似度ID并显示置信度
 
-USE_CAMERA = False
+USE_CAMERA = True
 
 # VIDEO_PATH = r"D:\FFOutput\11.25\329.mp4"
 VIDEO_PATH = r"D:\FFOutput\test.mp4"
 
-GALLERY_PATH = r"E:\COW\Obc-SDK-Test\gallery\yaan-1120"
+GALLERY_PATH = r"/home/nvidia/PycharmProjects/Obc_SDK/cow/gallery"
 
-YOLO_MODEL_PATH = "E:\COW\Obc-SDK-Test\checkpoints\yolo11n.pt"
-REID_MODEL_PATH = r"E:\COW\Obc-SDK-Test\checkpoints\best_model_1126.pth"
+YOLO_MODEL_PATH = "/home/nvidia/PycharmProjects/Obc_SDK/cow/yolo11n.pt"
+REID_MODEL_PATH = r"/home/nvidia/PycharmProjects/Obc_SDK/cow/best_model_state_dict.pth"
 
 SIMILARITY_THRESH = 0.60
 CONFIDENCE_THRESH = 0.03
@@ -47,9 +47,9 @@ MEASUREMENT_THICKNESS = 2  # <--- 体尺指标粗细
 TRACK_HISTORY = 30
 DISPLAY_WIDTH = 1280
 DISPLAY_HEIGHT = 720
-SHOW_FPS = False  # <--- 关闭FPS显示
+SHOW_FPS = True  # <--- 关闭FPS显示
 
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 USE_ORBBEC = True
 
 LOG_DIR = "./logs"
@@ -66,7 +66,7 @@ MIN_VOTE_SAMPLES = 3
 REID_BATCH_SIZE = 1
 
 # 视频保存
-SAVE_VIDEO = True
+SAVE_VIDEO = False
 OUTPUT_VIDEO_DIR = "./output_videos"
 VIDEO_FPS = 10
 
@@ -486,7 +486,11 @@ class CowReIDSystem:
         self.detector = YOLO(YOLO_MODEL_PATH)
         self.reid_model = CowReIDModel('MegaDescriptor-S-224', use_lightweight=False)
         try:
-            ckpt = torch.load(REID_MODEL_PATH, map_location='cpu', weights_only=False)
+            try:
+                ckpt = torch.load(REID_MODEL_PATH, map_location='cpu', weights_only=False)
+            except TypeError:
+                # torch<2.0 has no weights_only kwarg; it would be forwarded to pickle Unpickler and crash.
+                ckpt = torch.load(REID_MODEL_PATH, map_location='cpu')
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
             self.reid_model.load_state_dict(state, strict=False)
             self.reid_model = self.reid_model.to(self.device).eval()
