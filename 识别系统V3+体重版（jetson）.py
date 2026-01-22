@@ -50,6 +50,8 @@ DISPLAY_HEIGHT = 720
 SHOW_FPS = True  # True=显示FPS，False=不显示
 FPS_SMOOTHING = 0.9  # FPS指数滑动平均的平滑系数(越大越平滑)
 
+WINDOW_NAME = "Cow ReID System v3.3 (Enhanced)"
+
 CAMERA_INDEX = 0
 USE_ORBBEC = True
 
@@ -746,6 +748,7 @@ class CowReIDSystem:
 
         track_kwargs = {
             'persist': True,
+            'show': False,  # 避免ultralytics内部自动弹出多余的cv2窗口
             'verbose': False,
             'conf': CONFIDENCE_THRESH,
             'iou': IOU_THRESH
@@ -938,8 +941,8 @@ class CowReIDSystem:
         return annotated_frame
 
     def run(self):
-        cv2.namedWindow("Cow ReID System v3.3 (Enhanced)", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Cow ReID System v3.3 (Enhanced)", DISPLAY_WIDTH, DISPLAY_HEIGHT)
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(WINDOW_NAME, DISPLAY_WIDTH, DISPLAY_HEIGHT)
 
         while True:
             success, frame = self.cap.read()
@@ -969,7 +972,7 @@ class CowReIDSystem:
                 else:
                     self.video_writer.write(annotated)  # 视频文件：保存带检测框的视频
 
-            cv2.imshow("Cow ReID System v3.3 (Enhanced)", annotated)
+            cv2.imshow(WINDOW_NAME, annotated)
 
             if self.frame_count % 100 == 0:
                 logger.info(f"已处理 {self.frame_count} 帧")
